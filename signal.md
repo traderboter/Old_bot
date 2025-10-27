@@ -312,30 +312,386 @@ async def analyze_symbol(self, symbol: str, timeframes_data: Dict[str, Optional[
 برای هر تایم‌فریم (مثلاً 5m) این تحلیل‌ها به ترتیب انجام می‌شوند:
 
 #### مرحله 1: تشخیص روند (Trend Detection)
+
+**محل در کد:** `signal_generator.py:1719-1850`
+
 ```python
 analysis_data['trend'] = self.detect_trend(df)
 ```
 
 **چه کاری انجام می‌شود؟**
-- محاسبه EMA‌های 20، 50، 100
-- تعیین جهت روند (Bullish/Bearish/Neutral)
-- محاسبه قدرت روند (Trend Strength)
+1. محاسبه EMA‌های 20، 50، 100
+2. تعیین جهت روند (Bullish/Bearish/Neutral)
+3. محاسبه قدرت روند (Trend Strength: -3 تا +3)
+4. تشخیص فاز روند (Trend Phase: early/developing/mature)
+5. بررسی چیدمان EMA‌ها (EMA Arrangement)
 
-**خروجی نمونه:**
+---
+
+##### 1.1 محاسبه EMA و تشخیص ترتیب
+
+```python
+ema20 = talib.EMA(close, timeperiod=20)
+ema50 = talib.EMA(close, timeperiod=50)
+ema100 = talib.EMA(close, timeperiod=100)
+
+# محاسبه شیب (Slope) برای تشخیص جهت
+ema20_slope = ema20[-1] - ema20[-6]  # تغییرات 5 کندل اخیر
+ema50_slope = ema50[-1] - ema50[-6]
+```
+
+**انواع چیدمان EMA (EMA Arrangement):**
+
+| چیدمان | شرط | معنی |
+|--------|-----|------|
+| `bullish_aligned` | EMA20 > EMA50 > EMA100 | روند صعودی قوی ✅ |
+| `bearish_aligned` | EMA20 < EMA50 < EMA100 | روند نزولی قوی ⬇️ |
+| `potential_bullish_reversal` | EMA20 > EMA50 < EMA100 | احتمال بازگشت صعودی 🔄 |
+| `potential_bearish_reversal` | EMA20 < EMA50 > EMA100 | احتمال بازگشت نزولی 🔄 |
+| `mixed` | غیر از موارد بالا | روند نامشخص ⚠️ |
+
+---
+
+##### 1.2 تعیین جهت و قدرت روند
+
+**جدول کامل Trend Detection:**
+
+| شرط | Trend | Strength | Phase |
+|-----|-------|----------|-------|
+| Close > EMA20 > EMA50 > EMA100 + شیب مثبت | `bullish` | **+3** | `mature` |
+| Close > EMA20 > EMA50 + شیب EMA20 مثبت | `bullish` | **+2** | `developing` |
+| Close > EMA20 + شیب EMA20 مثبت | `bullish` | **+1** | `early` |
+| Close < EMA20 < EMA50 < EMA100 + شیب منفی | `bearish` | **-3** | `mature` |
+| Close < EMA20 < EMA50 + شیب EMA20 منفی | `bearish` | **-2** | `developing` |
+| Close < EMA20 + شیب EMA20 منفی | `bearish` | **-1** | `early` |
+| سایر موارد | `neutral` | **0** | `undefined` |
+
+**خروجی کامل نمونه:**
 ```python
 {
-    'direction': 'bullish',  # یا 'bearish' یا 'neutral'
-    'strength': 0.75,        # بین 0 تا 1
+    'trend': 'bullish',              # جهت: bullish/bearish/neutral
+    'strength': 3,                   # قدرت: -3 تا +3
+    'trend_phase': 'mature',         # فاز: early/developing/mature
+    'ema_arrangement': 'bullish_aligned',
     'ema20': 50000,
     'ema50': 49500,
-    'ema100': 49000
+    'ema100': 49000,
+    'ema20_slope': 250.5,           # شیب EMA20 (مثبت = صعودی)
+    'ema50_slope': 180.2,           # شیب EMA50
+    'price_above_ema20': True,
+    'confidence': 0.92              # اطمینان از تشخیص
 }
 ```
 
-**امتیازدهی:**
-- EMA در این مرحله **مستقیماً امتیاز تولید نمی‌کند**
-- بلکه برای **تأیید جهت سیگنال** استفاده می‌شود
-- اگر سیگنال خرید باشد ولی روند نزولی → امتیاز کاهش می‌یابد
+---
+
+##### 1.3 نقش Trend در امتیازدهی
+
+**مهم:** EMA در این مرحله **مستقیماً امتیاز تولید نمی‌کند**!
+
+**چرا؟**
+- EMA یک اندیکاتور تأخیری (Lagging) است
+- نباید از آن برای تولید سیگنال استفاده شود
+- بلکه به عنوان **فیلتر جهت** و **Context** عمل می‌کند
+
+**روش استفاده:** Trend Alignment Multiplier
+
+```python
+def calculate_trend_alignment_multiplier(signal_direction, trend_data):
+    """
+    محاسبه ضریب هماهنگی سیگنال با روند
+    """
+    trend = trend_data['trend']
+    strength = trend_data['strength']  # -3 to +3
+    phase = trend_data['trend_phase']
+
+    # فاز 1: بررسی جهت اصلی
+    if signal_direction == 'long':
+        if trend == 'bullish':
+            # سیگنال خرید + روند صعودی ✅
+            base_multiplier = 1.0 + (strength * 0.05)  # 1.05 to 1.15
+        elif trend == 'neutral':
+            # سیگنال خرید + روند خنثی ⚠️
+            base_multiplier = 1.0  # بدون تغییر
+        else:  # bearish
+            # سیگنال خرید + روند نزولی ❌
+            penalty = abs(strength) * 0.10  # 0.10 to 0.30
+            base_multiplier = 1.0 - penalty  # 0.70 to 0.90
+
+    elif signal_direction == 'short':
+        if trend == 'bearish':
+            base_multiplier = 1.0 + (abs(strength) * 0.05)  # 1.05 to 1.15
+        elif trend == 'neutral':
+            base_multiplier = 1.0
+        else:  # bullish
+            penalty = strength * 0.10
+            base_multiplier = 1.0 - penalty  # 0.70 to 0.90
+
+    # فاز 2: تأثیر Trend Phase
+    phase_bonus = {
+        'early': 0.00,      # روند تازه شروع شده
+        'developing': 0.03, # روند در حال رشد
+        'mature': 0.05      # روند بالغ و قوی
+    }
+
+    final_multiplier = base_multiplier + phase_bonus.get(phase, 0)
+
+    return final_multiplier
+```
+
+---
+
+##### 1.4 جدول کامل Trend Alignment Multiplier
+
+**برای سیگنال LONG (خرید):**
+
+| Trend | Strength | Phase | Base Multiplier | Phase Bonus | Final Multiplier | تأثیر |
+|-------|----------|-------|----------------|-------------|------------------|-------|
+| Bullish | +3 | mature | 1.15 | +0.05 | **1.20** | +20% 🚀 |
+| Bullish | +3 | developing | 1.15 | +0.03 | **1.18** | +18% ✅ |
+| Bullish | +2 | developing | 1.10 | +0.03 | **1.13** | +13% ✅ |
+| Bullish | +1 | early | 1.05 | +0.00 | **1.05** | +5% ✅ |
+| Neutral | 0 | - | 1.00 | 0 | **1.00** | 0% ⚠️ |
+| Bearish | -1 | early | 0.90 | 0 | **0.90** | -10% ❌ |
+| Bearish | -2 | developing | 0.80 | 0 | **0.80** | -20% ❌ |
+| Bearish | -3 | mature | 0.70 | 0 | **0.70** | -30% 🚫 |
+
+**برای سیگنال SHORT (فروش):** مشابه بالا ولی معکوس
+
+---
+
+##### 1.5 مثال‌های عملی
+
+**مثال 1: سیگنال Long + Trend Bullish Strong (بهترین حالت)**
+
+```python
+# داده‌های ورودی
+signal_direction = 'long'
+trend_data = {
+    'trend': 'bullish',
+    'strength': 3,
+    'trend_phase': 'mature',
+    'ema_arrangement': 'bullish_aligned'
+}
+
+# امتیاز اولیه سیگنال
+raw_score = 75
+
+# محاسبه multiplier
+multiplier = 1.0 + (3 * 0.05) + 0.05 = 1.20
+
+# امتیاز نهایی
+final_score = 75 * 1.20 = 90 ✅
+
+# نتیجه: افزایش 20% به خاطر هماهنگی کامل با روند
+```
+
+**مثال 2: سیگنال Long + Trend Bearish Strong (بدترین حالت)**
+
+```python
+# داده‌های ورودی
+signal_direction = 'long'
+trend_data = {
+    'trend': 'bearish',
+    'strength': -3,
+    'trend_phase': 'mature',
+    'ema_arrangement': 'bearish_aligned'
+}
+
+# امتیاز اولیه
+raw_score = 75
+
+# محاسبه penalty
+penalty = 3 * 0.10 = 0.30
+multiplier = 1.0 - 0.30 = 0.70
+
+# امتیاز نهایی
+final_score = 75 * 0.70 = 52.5 ❌
+
+# نتیجه: کاهش 30% - سیگنال در خلاف جهت روند قوی!
+# احتمالاً زیر آستانه minimum_score قرار می‌گیرد و رد می‌شود
+```
+
+**مثال 3: سیگنال Long + Trend Neutral**
+
+```python
+# داده‌های ورودی
+signal_direction = 'long'
+trend_data = {
+    'trend': 'neutral',
+    'strength': 0,
+    'trend_phase': 'undefined'
+}
+
+# امتیاز اولیه
+raw_score = 75
+
+# محاسبه multiplier
+multiplier = 1.0  # بدون تغییر
+
+# امتیاز نهایی
+final_score = 75 * 1.0 = 75 ⚠️
+
+# نتیجه: بدون افزایش یا کاهش
+# در روند خنثی، سیگنال‌های Range-based ممکن است بهتر باشند
+```
+
+**مثال 4: سیگنال Long + Trend Developing Bullish**
+
+```python
+# داده‌های ورودی
+signal_direction = 'long'
+trend_data = {
+    'trend': 'bullish',
+    'strength': 2,
+    'trend_phase': 'developing',
+    'ema20': 50200,
+    'ema50': 50000,
+    'ema100': 49800,
+    'ema20_slope': 150.0  # مثبت
+}
+
+# امتیاز اولیه
+raw_score = 68
+
+# محاسبه
+base = 1.0 + (2 * 0.05) = 1.10
+phase_bonus = 0.03
+multiplier = 1.10 + 0.03 = 1.13
+
+# امتیاز نهایی
+final_score = 68 * 1.13 = 76.84 ✅
+
+# نتیجه: افزایش 13% - روند در حال تقویت است
+```
+
+---
+
+##### 1.6 تعامل Trend با Multi-Timeframe Analysis
+
+**قانون طلایی:**
+> هرگز در خلاف جهت تایم‌فریم‌های بالاتر معامله نکن!
+
+**سلسله مراتب اهمیت:**
+```
+4h Trend (35% وزن) > 1h Trend (30% وزن) > 15m Trend (20% وزن) > 5m Trend (15% وزن)
+```
+
+**سناریو 1: همراستایی کامل**
+```python
+trends = {
+    '5m':  {'trend': 'bullish', 'strength': 2},
+    '15m': {'trend': 'bullish', 'strength': 2},
+    '1h':  {'trend': 'bullish', 'strength': 3},
+    '4h':  {'trend': 'bullish', 'strength': 3}
+}
+
+# همه تایم‌فریم‌ها bullish!
+# ضریب alignment = 1.0
+# multiplier نهایی = 1.3 (به خاطر Confluence)
+# این بهترین حالت ممکن است! 🚀
+```
+
+**سناریو 2: تضاد با تایم‌فریم‌های بالا (خطرناک)**
+```python
+trends = {
+    '5m':  {'trend': 'bullish', 'strength': 2},  # سیگنال خرید
+    '15m': {'trend': 'bullish', 'strength': 1},
+    '1h':  {'trend': 'bearish', 'strength': -2}, # مخالف!
+    '4h':  {'trend': 'bearish', 'strength': -3}  # مخالف قوی!
+}
+
+# وزن تایم‌فریم‌های bearish = 0.30 + 0.35 = 0.65 (65%)
+# وزن تایم‌فریم‌های bullish = 0.15 + 0.20 = 0.35 (35%)
+
+# نتیجه: سیگنال Long رد می‌شود! ❌
+# چرا؟ روند کلی بازار (4h + 1h) نزولی است
+```
+
+**سناریو 3: تایم‌فریم‌های پایین مخالف**
+```python
+trends = {
+    '5m':  {'trend': 'bearish', 'strength': -1}, # مخالف
+    '15m': {'trend': 'neutral', 'strength': 0},
+    '1h':  {'trend': 'bullish', 'strength': 2},  # موافق
+    '4h':  {'trend': 'bullish', 'strength': 3}   # موافق قوی
+}
+
+# وزن تایم‌فریم‌های bullish = 0.30 + 0.35 = 0.65 (65%)
+
+# نتیجه: سیگنال Long پذیرفته می‌شود ✅
+# تایم‌فریم‌های بالا (1h, 4h) هر دو bullish هستند
+# 5m ممکن است فقط یک Pullback موقتی باشد
+# اما alignment_score کمی کاهش می‌یابد
+```
+
+---
+
+##### 1.7 Trend در Market Regime Detection
+
+Trend با Market Regime تعامل دارد:
+
+```python
+regime = {
+    'type': 'strong_trend_normal',
+    'trend_direction': 'bullish',
+    'adx': 32.5,  # قوی
+    'volatility': 'normal'
+}
+
+# در رژیم Strong Trend:
+# - سیگنال‌های Trend-Following اولویت دارند
+# - سیگنال‌های Counter-Trend رد می‌شوند
+# - Minimum Signal Score افزایش می‌یابد
+
+# اگر Market Regime = Range:
+# - روند neutral یا ضعیف
+# - سیگنال‌های Mean Reversion بهتر عمل می‌کنند
+# - تأثیر Trend کاهش می‌یابد
+```
+
+---
+
+##### 1.8 خلاصه و نتیجه‌گیری
+
+**نکات کلیدی:**
+
+✅ **Trend یک فیلتر است، نه یک سیگنال:**
+- مستقیماً امتیاز تولید نمی‌کند
+- ضریبی برای تأیید یا رد سیگنال‌های دیگر است
+
+✅ **هماهنگی با روند بالاتر حیاتی است:**
+- معامله در خلاف جهت 4h و 1h بسیار پرخطر است
+- Penalty برای مخالفت: تا 30% کاهش امتیاز
+
+✅ **Trend Phase اهمیت دارد:**
+- Mature Trend → پاداش +5%
+- Early Trend → بدون پاداش
+
+✅ **در Neutral Trend:**
+- سیگنال‌های Range-based و Mean Reversion مناسب‌ترند
+- تأثیر Trend صفر است
+
+**جدول خلاصه تأثیر:**
+
+| وضعیت | Multiplier | نتیجه |
+|-------|-----------|-------|
+| **Perfect Alignment** | 1.15-1.20 | +15% تا +20% ✅ |
+| **Good Alignment** | 1.05-1.15 | +5% تا +15% ✅ |
+| **Neutral** | 1.00 | بدون تغییر ⚠️ |
+| **Weak Opposition** | 0.90-0.95 | -5% تا -10% ❌ |
+| **Strong Opposition** | 0.70-0.85 | -15% تا -30% 🚫 |
+
+**محل اعمال در Final Score:**
+
+```python
+# در signal_generator.py:4406-4408
+if signal_direction != trend_direction:
+    structure_score *= (1 - trend_penalty_mult * trend_strength_ratio)
+
+# در فرمول نهایی
+final_score = raw_score * trend_multiplier * regime_multiplier * volatility_factor
+```
 
 ---
 
