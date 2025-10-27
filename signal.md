@@ -825,6 +825,797 @@ signal = {
 
 **پایان بخش 4**
 
+---
+
+## بخش ۵: ترکیب امتیازات چند تایم‌فریمی (اینجا جادو اتفاق می‌افتد!)
+
+این بخش **قلب سیستم** است! تا اینجا هر تایم‌فریم به صورت مستقل تحلیل شد، ولی حالا باید این تحلیل‌ها را با هم ترکیب کنیم تا یک **سیگنال واحد و قدرتمند** بسازیم.
+
+### 5.1 چرا چند تایم‌فریم؟
+
+**مشکل تحلیل تک تایم‌فریم:**
+
+فرض کنید فقط تایم‌فریم 5 دقیقه‌ای را نگاه می‌کنید:
+- ممکن است یک سیگنال خرید قوی ببینید ✅
+- اما روند کلی در تایم‌فریم 4 ساعته نزولی باشد ❌
+- نتیجه: سیگنال گمراه‌کننده و ضرر احتمالی
+
+**راه‌حل: Multi-Timeframe Analysis**
+
+```
+5m  → جزئیات دقیق، نقطه ورود
+15m → تأیید روند کوتاه‌مدت
+1h  → روند میان‌مدت
+4h  → روند کلی، جهت بازار
+```
+
+**قانون طلایی:**
+> هرگز **در خلاف جهت تایم‌فریم‌های بالاتر** معامله نکن!
+
+---
+
+### 5.2 وزن‌دهی به تایم‌فریم‌ها
+
+**محل:** `signal_generator.py:5003-5042`
+
+هر تایم‌فریم یک **وزن (Weight)** دارد که اهمیت آن را مشخص می‌کند:
+
+```python
+TIMEFRAME_WEIGHTS = {
+    '5m': 0.15,   # 15% - فقط برای تایمینگ دقیق
+    '15m': 0.20,  # 20% - روند کوتاه‌مدت
+    '1h': 0.30,   # 30% - روند میان‌مدت (مهم!)
+    '4h': 0.35    # 35% - روند اصلی (بسیار مهم!)
+}
+```
+
+**چرا این وزن‌ها؟**
+
+1. **تایم‌فریم‌های بالاتر معتبرتر هستند:**
+   - نویز کمتر
+   - روندهای قوی‌تر
+   - سیگنال‌های پایدارتر
+
+2. **تایم‌فریم پایین برای Timing:**
+   - نقطه ورود دقیق
+   - جزئیات کوتاه‌مدت
+   - ولی نباید تصمیم اصلی را بگیرد
+
+**مثال:**
+```
+اگر 4h و 1h هر دو نزولی هستند → وزن = 65%
+حتی اگر 5m و 15m صعودی باشند → وزن = 35%
+نتیجه: سیگنال خرید رد می‌شود! ❌
+```
+
+---
+
+### 5.3 محاسبه Alignment Score (امتیاز همراستایی)
+
+**محل:** `signal_generator.py:5044-5120`
+
+یکی از مهم‌ترین مفاهیم: **همراستایی (Alignment)**
+
+#### تعریف Alignment:
+
+```python
+def calculate_alignment_score(timeframe_signals: Dict[str, Dict]) -> float:
+    """
+    محاسبه همراستایی بین تایم‌فریم‌ها
+
+    خروجی: 0.0 تا 1.0
+    - 1.0 = کاملاً همسو
+    - 0.0 = کاملاً متضاد
+    """
+```
+
+#### مثال عملی:
+
+**حالت 1: همراستایی کامل ✅**
+```python
+timeframe_signals = {
+    '5m':  {'direction': 'long',  'score': 68},
+    '15m': {'direction': 'long',  'score': 72},
+    '1h':  {'direction': 'long',  'score': 75},
+    '4h':  {'direction': 'long',  'score': 80}
+}
+
+# همه تایم‌فریم‌ها long
+alignment_score = 1.0  # کامل! 🎯
+```
+
+**حالت 2: همراستایی ضعیف ⚠️**
+```python
+timeframe_signals = {
+    '5m':  {'direction': 'long',  'score': 65},
+    '15m': {'direction': 'long',  'score': 60},
+    '1h':  {'direction': 'short', 'score': 55},  # مخالف!
+    '4h':  {'direction': 'short', 'score': 70}   # مخالف!
+}
+
+# تایم‌فریم‌های بالا مخالف هستند
+alignment_score = 0.35  # ضعیف!
+```
+
+#### فرمول محاسبه Alignment:
+
+```python
+# مرحله 1: شمارش جهت غالب
+long_weight = sum(TIMEFRAME_WEIGHTS[tf] for tf, sig in signals.items() if sig['direction'] == 'long')
+short_weight = sum(TIMEFRAME_WEIGHTS[tf] for tf, sig in signals.items() if sig['direction'] == 'short')
+
+# مرحله 2: تعیین جهت غالب
+dominant_direction = 'long' if long_weight > short_weight else 'short'
+dominant_weight = max(long_weight, short_weight)
+
+# مرحله 3: محاسبه alignment
+alignment = dominant_weight / sum(TIMEFRAME_WEIGHTS.values())
+```
+
+**مثال محاسبه:**
+```
+5m = long  (0.15)
+15m = long (0.20)
+1h = short (0.30)
+4h = short (0.35)
+
+long_weight = 0.15 + 0.20 = 0.35
+short_weight = 0.30 + 0.35 = 0.65
+
+dominant_direction = 'short'
+alignment = 0.65 / 1.0 = 0.65 (همراستایی متوسط)
+```
+
+---
+
+### 5.4 محاسبه Weighted Score (امتیاز وزن‌دار)
+
+**محل:** `signal_generator.py:5122-5180`
+
+حالا که وزن‌ها و همراستایی را داریم، باید امتیاز نهایی را حساب کنیم:
+
+#### فرمول محاسبه:
+
+```python
+def calculate_weighted_score(timeframe_signals: Dict, alignment: float) -> float:
+    """
+    امتیاز = (مجموع امتیازات × وزن‌ها) × ضریب همراستایی
+    """
+
+    # مرحله 1: محاسبه امتیاز وزن‌دار پایه
+    base_score = 0
+    for tf, signal in timeframe_signals.items():
+        weight = TIMEFRAME_WEIGHTS[tf]
+        score = signal['score']
+        base_score += score * weight
+
+    # مرحله 2: اعمال ضریب همراستایی
+    alignment_multiplier = 0.7 + (alignment * 0.6)  # بین 0.7 تا 1.3
+
+    # مرحله 3: محاسبه نهایی
+    final_score = base_score * alignment_multiplier
+
+    return final_score
+```
+
+#### مثال کامل محاسبه:
+
+**شرایط:**
+```python
+timeframe_signals = {
+    '5m':  {'direction': 'long', 'score': 68},
+    '15m': {'direction': 'long', 'score': 72},
+    '1h':  {'direction': 'long', 'score': 75},
+    '4h':  {'direction': 'long', 'score': 80}
+}
+```
+
+**محاسبات:**
+```
+مرحله 1: امتیاز وزن‌دار پایه
+---------------------------------
+5m:  68 × 0.15 = 10.2
+15m: 72 × 0.20 = 14.4
+1h:  75 × 0.30 = 22.5
+4h:  80 × 0.35 = 28.0
+---------------------------------
+base_score = 75.1
+
+مرحله 2: محاسبه همراستایی
+---------------------------------
+alignment = 1.0 (همه long)
+alignment_multiplier = 0.7 + (1.0 × 0.6) = 1.3
+
+مرحله 3: امتیاز نهایی
+---------------------------------
+final_score = 75.1 × 1.3 = 97.6 ✅
+```
+
+**نتیجه:** امتیاز 97.6 → سیگنال بسیار قوی! 🚀
+
+---
+
+### 5.5 مثال مقایسه‌ای: همراستایی قوی vs ضعیف
+
+#### مثال A: همراستایی عالی (Alignment = 1.0)
+
+```python
+# داده‌ها
+signals_A = {
+    '5m':  {'direction': 'long', 'score': 65},
+    '15m': {'direction': 'long', 'score': 70},
+    '1h':  {'direction': 'long', 'score': 75},
+    '4h':  {'direction': 'long', 'score': 82}
+}
+
+# محاسبه
+base_score_A = (65×0.15) + (70×0.20) + (75×0.30) + (82×0.35)
+            = 9.75 + 14 + 22.5 + 28.7
+            = 74.95
+
+alignment_A = 1.0
+multiplier_A = 0.7 + (1.0 × 0.6) = 1.3
+
+final_score_A = 74.95 × 1.3 = 97.4 ✅
+```
+
+#### مثال B: همراستایی ضعیف (Alignment = 0.35)
+
+```python
+# داده‌ها
+signals_B = {
+    '5m':  {'direction': 'long', 'score': 70},
+    '15m': {'direction': 'long', 'score': 68},
+    '1h':  {'direction': 'short', 'score': 60},
+    '4h':  {'direction': 'short', 'score': 75}
+}
+
+# محاسبه
+base_score_B = (70×0.15) + (68×0.20) + (60×0.30) + (75×0.35)
+            = 10.5 + 13.6 + 18 + 26.25
+            = 68.35
+
+alignment_B = 0.35  # فقط 5m و 15m long
+multiplier_B = 0.7 + (0.35 × 0.6) = 0.91
+
+final_score_B = 68.35 × 0.91 = 62.2 ⚠️
+```
+
+#### مقایسه نتایج:
+
+| مورد | Base Score | Alignment | Multiplier | Final Score | نتیجه |
+|------|-----------|-----------|-----------|-------------|-------|
+| **A** | 74.95 | 1.0 | 1.3 | **97.4** | ✅ سیگنال قوی |
+| **B** | 68.35 | 0.35 | 0.91 | **62.2** | ⚠️ سیگنال ضعیف |
+
+**درس گرفته شده:**
+- هرچند امتیازات مثال B بد نبودند
+- ولی عدم همراستایی باعث کاهش 35% امتیاز شد!
+- این یک **مکانیزم حفاظتی** است
+
+---
+
+### 5.6 Confluence Bonus (پاداش همگرایی)
+
+**محل:** `signal_generator.py:5182-5240`
+
+وقتی چند تایم‌فریم **همزمان** سیگنال قوی می‌دهند، یک **پاداش اضافی** دریافت می‌کنند.
+
+#### شرایط Confluence:
+
+```python
+def check_confluence(timeframe_signals: Dict) -> Dict:
+    """
+    بررسی همگرایی سیگنال‌ها
+    """
+    confluence = {
+        'exists': False,
+        'strength': 0,
+        'bonus': 0
+    }
+
+    # شمارش سیگنال‌های قوی (score > 70)
+    strong_signals = [
+        tf for tf, sig in timeframe_signals.items()
+        if sig['score'] > 70 and sig['direction'] == dominant_direction
+    ]
+
+    # محاسبه پاداش
+    if len(strong_signals) >= 3:
+        confluence['exists'] = True
+        confluence['strength'] = len(strong_signals) / len(timeframe_signals)
+        confluence['bonus'] = 5 + (confluence['strength'] * 10)
+
+    return confluence
+```
+
+#### مثال Confluence:
+
+```python
+signals = {
+    '5m':  {'direction': 'long', 'score': 78},  # قوی ✅
+    '15m': {'direction': 'long', 'score': 82},  # قوی ✅
+    '1h':  {'direction': 'long', 'score': 75},  # قوی ✅
+    '4h':  {'direction': 'long', 'score': 88}   # قوی ✅
+}
+
+# همه تایم‌فریم‌ها قوی!
+strong_count = 4
+confluence_strength = 4 / 4 = 1.0
+confluence_bonus = 5 + (1.0 × 10) = +15 امتیاز! 🎁
+
+final_score = weighted_score + confluence_bonus
+```
+
+**انواع Confluence:**
+
+| تعداد سیگنال قوی | Confluence | پاداش |
+|------------------|-----------|-------|
+| 1-2 | ضعیف | 0 |
+| 3 | خوب | +10 تا +12 |
+| 4 | عالی | +15 |
+
+---
+
+### 5.7 جریان کامل محاسبه امتیاز
+
+بیایید کل فرآیند را با یک مثال واقعی ببینیم:
+
+#### شرایط اولیه:
+
+```python
+# BTC/USDT - تحلیل در ساعت 14:00
+symbol = "BTC/USDT"
+current_price = 50000
+
+# نتایج تحلیل هر تایم‌فریم
+tf_analysis = {
+    '5m': {
+        'direction': 'long',
+        'score': 72,
+        'trend': 'bullish',
+        'macd_cross': True,
+        'rsi': 58,
+        'pattern': 'bullish_engulfing'
+    },
+    '15m': {
+        'direction': 'long',
+        'score': 78,
+        'trend': 'bullish',
+        'support_near': True,
+        'volume_confirmed': True
+    },
+    '1h': {
+        'direction': 'long',
+        'score': 82,
+        'trend': 'strong_bullish',
+        'harmonic_pattern': 'gartley',
+        'breakout': True
+    },
+    '4h': {
+        'direction': 'long',
+        'score': 85,
+        'trend': 'strong_bullish',
+        'regime': 'strong_trend_normal',
+        'channel': 'ascending'
+    }
+}
+```
+
+#### گام 1: محاسبه Base Score
+
+```python
+base_score = 0
+details = []
+
+# 5m
+score_5m = 72 × 0.15 = 10.8
+details.append("5m: 72 × 0.15 = 10.8")
+
+# 15m
+score_15m = 78 × 0.20 = 15.6
+details.append("15m: 78 × 0.20 = 15.6")
+
+# 1h
+score_1h = 82 × 0.30 = 24.6
+details.append("1h: 82 × 0.30 = 24.6")
+
+# 4h
+score_4h = 85 × 0.35 = 29.75
+details.append("4h: 85 × 0.35 = 29.75")
+
+base_score = 10.8 + 15.6 + 24.6 + 29.75 = 80.75
+```
+
+#### گام 2: محاسبه Alignment
+
+```python
+# همه جهت long
+long_weight = 0.15 + 0.20 + 0.30 + 0.35 = 1.0
+short_weight = 0
+
+alignment = 1.0  # کامل!
+alignment_multiplier = 0.7 + (1.0 × 0.6) = 1.3
+```
+
+#### گام 3: اعمال Alignment Multiplier
+
+```python
+aligned_score = base_score × alignment_multiplier
+aligned_score = 80.75 × 1.3 = 104.98
+```
+
+#### گام 4: بررسی Confluence
+
+```python
+# تعداد سیگنال‌های قوی (>70)
+strong_signals = ['5m', '15m', '1h', '4h']  # همه قوی!
+confluence_strength = 4 / 4 = 1.0
+confluence_bonus = 5 + (1.0 × 10) = 15
+```
+
+#### گام 5: محاسبه Final Score
+
+```python
+final_score = aligned_score + confluence_bonus
+final_score = 104.98 + 15 = 119.98
+
+# نرمال‌سازی به 100
+if final_score > 100:
+    final_score = 100  # سقف
+```
+
+#### خلاصه نهایی:
+
+```
+─────────────────────────────────
+📊 تحلیل نهایی BTC/USDT
+─────────────────────────────────
+Base Score:        80.75
+Alignment:         1.0 (کامل)
+Multiplier:        ×1.3
+Aligned Score:     104.98
+Confluence Bonus:  +15
+─────────────────────────────────
+FINAL SCORE:       100/100 ✅
+─────────────────────────────────
+Signal: STRONG BUY 🚀
+Confidence: VERY HIGH
+─────────────────────────────────
+```
+
+---
+
+### 5.8 حالت‌های خاص و استثناها
+
+#### حالت 1: تایم‌فریم ناقص
+
+```python
+# اگر داده یک تایم‌فریم موجود نباشد
+signals = {
+    '5m':  {'direction': 'long', 'score': 70},
+    '15m': {'direction': 'long', 'score': 75},
+    '1h':  None,  # داده ناقص!
+    '4h':  {'direction': 'long', 'score': 80}
+}
+
+# راه‌حل: توزیع مجدد وزن‌ها
+available_tfs = ['5m', '15m', '4h']
+total_weight = 0.15 + 0.20 + 0.35 = 0.70
+
+# نرمال‌سازی وزن‌ها
+adjusted_weights = {
+    '5m': 0.15 / 0.70 = 0.214,
+    '15m': 0.20 / 0.70 = 0.286,
+    '4h': 0.35 / 0.70 = 0.500
+}
+
+# ادامه محاسبات با وزن‌های جدید
+```
+
+#### حالت 2: تضاد تایم‌فریم‌های بالا
+
+```python
+signals = {
+    '5m':  {'direction': 'long', 'score': 85},   # خیلی قوی!
+    '15m': {'direction': 'long', 'score': 80},
+    '1h':  {'direction': 'short', 'score': 75},  # مخالف
+    '4h':  {'direction': 'short', 'score': 82}   # مخالف
+}
+
+# محاسبه alignment
+long_weight = 0.15 + 0.20 = 0.35
+short_weight = 0.30 + 0.35 = 0.65
+
+# تایم‌فریم‌های بالا (1h + 4h) مخالف!
+alignment = 0.65  # اما برای short!
+
+# نتیجه: سیگنال long رد می‌شود ❌
+# چون با روند کلی (4h, 1h) مخالف است
+```
+
+**قانون مهم:**
+> اگر تایم‌فریم‌های 1h و 4h هر دو در یک جهت باشند (وزن 65%)، سیگنال‌های مخالف **رد می‌شوند**!
+
+#### حالت 3: سیگنال‌های متناقض (Divergence)
+
+```python
+signals = {
+    '5m':  {'direction': 'long', 'score': 65},
+    '15m': {'direction': 'short', 'score': 60},  # متناقض!
+    '1h':  {'direction': 'long', 'score': 70},
+    '4h':  {'direction': 'short', 'score': 68}   # متناقض!
+}
+
+# محاسبه
+long_weight = 0.15 + 0.30 = 0.45
+short_weight = 0.20 + 0.35 = 0.55
+
+# تقریباً نصف نصف!
+alignment = 0.55  # ضعیف
+
+# ضریب کاهش شدید
+multiplier = 0.7 + (0.55 × 0.6) = 1.03
+
+# نتیجه: امتیاز نهایی پایین
+# توصیه: صبر کنید تا همگرایی بهتری ایجاد شود!
+```
+
+---
+
+### 5.9 جدول خلاصه: تأثیر Alignment بر امتیاز
+
+| Alignment | جهت غالب | تعداد همسو | Multiplier | تأثیر |
+|-----------|---------|-----------|-----------|-------|
+| 1.0 | همه یکسان | 4/4 | 1.3 | +30% 🚀 |
+| 0.85-0.99 | تقریباً همسو | 3/4 | 1.21-1.29 | +21-29% ✅ |
+| 0.65-0.84 | غالب | 2-3/4 | 1.09-1.20 | +9-20% ✅ |
+| 0.50-0.64 | ضعیف | 2/4 | 1.0-1.08 | 0-8% ⚠️ |
+| < 0.50 | متناقض | <2/4 | 0.7-0.99 | -1 تا -30% ❌ |
+
+---
+
+### 5.10 مثال واقعی: یک معامله کامل
+
+بیایید یک سناریوی واقعی را از ابتدا تا انتها دنبال کنیم:
+
+#### زمینه:
+```
+نماد: ETH/USDT
+تاریخ: 2024-01-15
+ساعت: 10:30 UTC
+قیمت فعلی: 2,450 USDT
+```
+
+#### تحلیل تایم‌فریم‌ها:
+
+**5m (5 دقیقه):**
+```python
+{
+    'direction': 'long',
+    'score': 68,
+    'details': {
+        'macd_cross': True,           # +12
+        'rsi': 52,                    # neutral, +5
+        'bullish_engulfing': True,    # +18
+        'volume_spike': True,         # +8
+        'near_support': True,         # +10
+        'trend': 'bullish'            # +15
+    },
+    'raw_score': 68
+}
+```
+
+**15m (15 دقیقه):**
+```python
+{
+    'direction': 'long',
+    'score': 75,
+    'details': {
+        'stoch_cross': True,          # +10
+        'price_channel': 'bottom',    # +20
+        'volume_confirmed': True,     # ×1.2
+        'support_test': 3,            # +15
+        'trend': 'bullish',           # +18
+        'pattern_quality': 0.82       # +12
+    },
+    'raw_score': 75
+}
+```
+
+**1h (1 ساعت):**
+```python
+{
+    'direction': 'long',
+    'score': 82,
+    'details': {
+        'harmonic_gartley': True,     # +35
+        'macd_divergence': True,      # +25
+        'breakout_confirmed': True,   # +30
+        'regime': 'strong_trend',     # ×1.15
+        'channel_ascending': True,    # +20
+        'cycle_bottom': True          # +18
+    },
+    'raw_score': 82
+}
+```
+
+**4h (4 ساعت):**
+```python
+{
+    'direction': 'long',
+    'score': 88,
+    'details': {
+        'strong_uptrend': True,       # +25
+        'adx': 34,                    # روند قوی, +20
+        'ema_alignment': True,        # +15
+        'volume_trend': 'increasing', # +12
+        'higher_highs': True,         # +16
+        'regime': 'ideal'             # ×1.2
+    },
+    'raw_score': 88
+}
+```
+
+#### محاسبه گام به گام:
+
+```python
+# گام 1: Base Weighted Score
+score_5m = 68 × 0.15 = 10.20
+score_15m = 75 × 0.20 = 15.00
+score_1h = 82 × 0.30 = 24.60
+score_4h = 88 × 0.35 = 30.80
+base_score = 80.60
+
+# گام 2: Alignment
+all_long = True
+alignment = 1.0
+multiplier = 1.3
+
+# گام 3: Aligned Score
+aligned_score = 80.60 × 1.3 = 104.78
+
+# گام 4: Confluence
+strong_count = 4  # همه > 70
+confluence_bonus = 15
+
+# گام 5: Final Score
+final = min(104.78 + 15, 100) = 100
+```
+
+#### سیگنال نهایی:
+
+```
+╔══════════════════════════════════════╗
+║   🎯 SIGNAL GENERATED - ETH/USDT    ║
+╠══════════════════════════════════════╣
+║ Direction:     LONG (BUY)            ║
+║ Final Score:   100/100 ⭐⭐⭐⭐⭐        ║
+║ Confidence:    MAXIMUM               ║
+║ Alignment:     1.0 (Perfect)         ║
+║ Confluence:    4/4 Timeframes        ║
+╠══════════════════════════════════════╣
+║ Entry:         2,450 USDT            ║
+║ Stop Loss:     2,402 USDT (-1.96%)   ║
+║ Take Profit:   2,594 USDT (+5.88%)   ║
+║ Risk/Reward:   1:3.0                 ║
+╠══════════════════════════════════════╣
+║ Position Size: 2.5% of portfolio     ║
+║ Max Risk:      1.5% (adapted)        ║
+╚══════════════════════════════════════╝
+
+✅ All timeframes BULLISH
+✅ Strong trend confirmed (4h)
+✅ Harmonic pattern at 1h
+✅ Channel breakout at 1h
+✅ Volume confirmation
+
+⚠️ Risk Management:
+   - Trail stop after +3%
+   - Take 50% profit at TP1 (2,520)
+   - Let 50% run to TP2 (2,594)
+```
+
+---
+
+### 5.11 نکات مهم و توصیه‌های کاربردی
+
+#### ✅ DO's (کارهای درست):
+
+1. **همیشه به تایم‌فریم‌های بالاتر اولویت بده**
+   ```python
+   if score_4h < 60 and alignment < 0.6:
+       reject_signal()  # حتی اگر 5m قوی باشد
+   ```
+
+2. **صبر کن تا همگرایی ایجاد شود**
+   ```python
+   if alignment < 0.65:
+       wait_for_better_setup()
+   ```
+
+3. **در روند قوی، با روند حرکت کن**
+   ```python
+   if regime == 'strong_trend_bullish':
+       prefer_long_signals()
+   ```
+
+#### ❌ DON'Ts (کارهای غلط):
+
+1. **هرگز فقط به یک تایم‌فریم تکیه نکن**
+   ```python
+   # ❌ اشتباه
+   if score_5m > 80:
+       enter_trade()
+
+   # ✅ درست
+   if score_5m > 70 and alignment > 0.7:
+       enter_trade()
+   ```
+
+2. **در خلاف جهت تایم‌فریم‌های بالا معامله نکن**
+   ```python
+   # ❌ اشتباه
+   if score_5m > 85:  # خیلی قوی!
+       enter_long()   # ولی 4h نزولی است!
+   ```
+
+3. **با alignment ضعیف معامله نکن**
+   ```python
+   if alignment < 0.5:
+       skip_signal()  # خطر بالا
+   ```
+
+---
+
+### 5.12 خلاصه بخش 5: جدول کامل امتیازدهی
+
+| مؤلفه | محدوده | تأثیر | اهمیت |
+|-------|---------|-------|-------|
+| **Base Score (5m)** | 0-100 | ×0.15 | ⭐⭐ |
+| **Base Score (15m)** | 0-100 | ×0.20 | ⭐⭐⭐ |
+| **Base Score (1h)** | 0-100 | ×0.30 | ⭐⭐⭐⭐ |
+| **Base Score (4h)** | 0-100 | ×0.35 | ⭐⭐⭐⭐⭐ |
+| **Alignment** | 0.0-1.0 | ×0.7-1.3 | ⭐⭐⭐⭐⭐ |
+| **Confluence** | 0-15 | +0 تا +15 | ⭐⭐⭐⭐ |
+| **Final Score** | 0-100 | - | - |
+
+#### فرمول نهایی:
+
+```python
+Final_Score = min(
+    (
+        (Score_5m × 0.15) +
+        (Score_15m × 0.20) +
+        (Score_1h × 0.30) +
+        (Score_4h × 0.35)
+    ) × (0.7 + Alignment × 0.6) + Confluence_Bonus,
+    100
+)
+```
+
+---
+
+## نتیجه‌گیری بخش 5
+
+🎯 **نکته کلیدی:**
+
+> قدرت واقعی این سیستم در **ترکیب هوشمند** تایم‌فریم‌هاست، نه تحلیل تک تایم‌فریم!
+
+**چه چیزی این سیستم را قدرتمند می‌کند:**
+
+1. ✅ **وزن‌دهی پویا** - تایم‌فریم‌های مهم‌تر اثر بیشتری دارند
+2. ✅ **همراستایی اجباری** - جلوگیری از سیگنال‌های متناقض
+3. ✅ **پاداش همگرایی** - تشویق سیگنال‌های قوی چند تایم‌فریمی
+4. ✅ **مکانیزم حفاظتی** - کاهش خودکار امتیاز در شرایط مبهم
+
+**اهمیت این بخش:**
+
+در بازارهای مالی، **کاهش نویز** بسیار مهم‌تر از یافتن سیگنال است. این سیستم با ترکیب چند تایم‌فریم، **نویز را فیلتر می‌کند** و فقط سیگنال‌های واقعاً قوی را باقی می‌گذارد.
+
+---
+
+**پایان بخش 5**
+
 در بخش بعدی توضیح می‌دهم:
-- **بخش 5:** ترکیب امتیازات چند تایم‌فریمی (اینجا جادو اتفاق می‌افتد!)
 - **بخش 6:** ML/AI Enhancement و محاسبه Final Score
