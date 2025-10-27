@@ -1713,231 +1713,619 @@ analysis_data['volatility'] = self.analyze_volatility_conditions(df)
 
 **راه‌حل:** تشخیص خودکار رژیم و تطبیق پارامترها
 
+---
+
 ### 4.2 نحوه تشخیص رژیم بازار
 
-**محل:** `signal_generator.py:226-500` (کلاس MarketRegimeDetector)
+**محل:** `market_regime_detector.py:416-590` (کلاس MarketRegimeDetector)
 
 ```python
 regime_result = self.regime_detector.detect_regime(df)
 ```
 
-#### مرحله 1: محاسبه ADX (Average Directional Index)
+---
+
+#### مرحله 1: محاسبه اندیکاتورها
+
+**محل در کد:** `market_regime_detector.py:226-390`
 
 ```python
+df_with_indicators, success = self._calculate_indicators(df)
+```
+
+**اندیکاتورهای محاسبه شده:**
+
+##### 1. ADX و DI (Average Directional Index)
+
+```python
+# market_regime_detector.py:253-259
 adx = talib.ADX(high, low, close, timeperiod=14)
 plus_di = talib.PLUS_DI(high, low, close, timeperiod=14)
 minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
 ```
 
 **ADX چه می‌گوید؟**
-- ADX > 25: روند قوی وجود دارد
-- ADX 20-25: روند ضعیف
-- ADX < 20: بازار رنج است (بدون روند)
+- ADX > 25: روند قوی وجود دارد (Strong Trend)
+- ADX 20-25: روند ضعیف (Weak Trend)
+- ADX < 20: بازار رنج است (No Trend / Range)
 
 **جهت روند:**
 - +DI > -DI → روند صعودی (Bullish)
 - -DI > +DI → روند نزولی (Bearish)
+- +DI ≈ -DI → بدون جهت مشخص (Neutral)
 
-#### مرحله 2: محاسبه ATR% (نوسان)
+---
+
+##### 2. ATR و ATR% (Average True Range)
 
 ```python
+# market_regime_detector.py:261-268
 atr = talib.ATR(high, low, close, timeperiod=20)
 atr_percent = (atr / close) * 100
 ```
 
 **سطوح نوسان:**
-- ATR% > 1.5: نوسان بالا (High Volatility)
-- ATR% 0.5-1.5: نوسان عادی (Normal)
-- ATR% < 0.5: نوسان پایین (Low Volatility)
+- ATR% > 1.5: نوسان بالا (High Volatility) ⚠️
+- ATR% 0.5-1.5: نوسان عادی (Normal Volatility) ✅
+- ATR% < 0.5: نوسان پایین (Low Volatility) ✅
+
+**چرا ATR% مهم است:**
+- در نوسان بالا: Stop Loss باید گسترده‌تر باشد
+- در نوسان بالا: ریسک هر معامله باید کمتر باشد
+- در نوسان پایین: می‌توان Stop Loss محکم‌تر گذاشت
+
+---
+
+##### 3. Bollinger Bands Width
+
+```python
+# market_regime_detector.py:270-279
+upper, middle, lower = talib.BBANDS(
+    close,
+    timeperiod=20,
+    nbdevup=2,
+    nbdevdn=2,
+    matype=0
+)
+bb_width = ((upper - lower) / middle) * 100
+```
+
+**کاربرد Bollinger Width:**
+- BB Width بالا → نوسان در حال افزایش (احتمال شکست)
+- BB Width پایین → نوسان در حال کاهش (احتمال رنج)
+- BB Squeeze → فشردگی → نزدیک به حرکت بزرگ
+
+---
+
+##### 4. RSI (Relative Strength Index)
+
+```python
+# market_regime_detector.py:281-282
+rsi = talib.RSI(close, timeperiod=14)
+```
+
+**کاربرد RSI در تشخیص رژیم:**
+- RSI > 70: احتمال بازار اشباع خرید (نزدیک به peak)
+- RSI < 30: احتمال بازار اشباع فروش (نزدیک به bottom)
+- RSI ≈ 50: بازار در تعادل
+
+---
+
+##### 5. Volume Analysis (اختیاری)
+
+```python
+# market_regime_detector.py:284-306
+if self.use_volume_analysis and 'volume' in df.columns:
+    # محاسبه تغییرات حجم
+    volume_ma = df['volume'].rolling(window=20).mean()
+    volume_ratio = df['volume'] / volume_ma
+    volume_change = df['volume'].pct_change()
+
+    # همبستگی قیمت و حجم
+    correlation = df['close'].pct_change().iloc[-20:].corr(
+        df['volume'].pct_change().iloc[-20:]
+    )
+```
+
+**کاربرد Volume:**
+- Volume بالا + حرکت قیمت → تأیید روند
+- Volume پایین + حرکت قیمت → روند ضعیف
+- Volume Divergence → هشدار تغییر روند
+
+---
+
+#### مرحله 2: تشخیص حالت‌های خاص
+
+##### 2.1 تشخیص Breakout (شکست)
+
+**محل در کد:** `market_regime_detector.py:332-390`
+
+```python
+is_breakout, breakout_direction = self._detect_breakout(df)
+```
+
+**شرایط Breakout:**
+
+```python
+# محاسبه بالاترین و پایین‌ترین قیمت در N کندل اخیر
+lookback = self.breakout_lookback  # 10 کندل
+recent_high = df['high'].iloc[-(lookback+1):-1].max()
+recent_low = df['low'].iloc[-(lookback+1):-1].max()
+
+current_close = df['close'].iloc[-1]
+
+# شرط Bullish Breakout
+if current_close > recent_high:
+    # بررسی حجم
+    volume_confirmation = current_volume > avg_volume * 1.5
+
+    # بررسی قدرت حرکت (تغییرات قیمت)
+    price_move_percent = (current_close - recent_high) / recent_high
+    strong_move = price_move_percent > (self.breakout_threshold / 100)  # 2%
+
+    if volume_confirmation and strong_move:
+        is_breakout = True
+        breakout_direction = "bullish"
+
+# مشابه برای Bearish Breakout
+```
+
+**شرایط کامل Breakout:**
+1. **شکست قیمتی:** قیمت از highest/lowest اخیر عبور کند
+2. **تأیید حجم:** حجم معامله > 1.5 × میانگین حجم
+3. **قدرت حرکت:** حرکت قیمت > 2% (قابل تنظیم)
+
+---
+
+##### 2.2 تشخیص Choppy Market (بازار آشفته)
+
+**محل در کد:** `market_regime_detector.py:392-414`
+
+```python
+is_choppy = self._is_choppy_market(df)
+```
+
+**شرایط Choppy:**
+
+```python
+# محاسبه نوسانات جهت قیمت
+close_changes = df['close'].pct_change().iloc[-20:]  # 20 کندل اخیر
+direction_changes = (close_changes > 0).astype(int).diff().abs()
+direction_change_rate = direction_changes.sum() / len(direction_changes)
+
+# اگر جهت خیلی زیاد تغییر کند → Choppy
+if direction_change_rate > self.choppy_threshold:  # 0.3 = 30%
+    # بررسی اضافی: ADX پایین و BB Width بالا
+    if current_adx < 20 and current_bb_width > median_bb_width * 1.5:
+        is_choppy = True
+```
+
+**علائم Choppy Market:**
+1. تغییرات مکرر جهت قیمت (بیش از 30%)
+2. ADX پایین (کمتر از 20)
+3. Bollinger Width بالا (نوسان بالا)
+4. عدم روند مشخص
+
+---
 
 #### مرحله 3: تعیین رژیم نهایی
 
-رژیم بازار از **ترکیب ADX و ATR** ساخته می‌شود:
+**محل در کد:** `market_regime_detector.py:484-508`
+
+رژیم بازار از **ترکیب** اندیکاتورها و حالت‌های خاص تعیین می‌شود:
 
 ```python
-if adx > 25:
+# گام 1: تعیین قدرت روند (بر اساس ADX)
+if current_adx > 25:
     trend_strength = 'strong'
-elif adx > 20:
+elif current_adx > 20:
     trend_strength = 'weak'
 else:
     trend_strength = 'no_trend'
 
-# ترکیب با volatility
-regime = f'{trend_strength}_trend_{volatility}'
+# گام 2: تعیین جهت روند (بر اساس DI)
+if current_plus_di > current_minus_di:
+    trend_direction = 'bullish'
+elif current_minus_di > current_plus_di:
+    trend_direction = 'bearish'
+else:
+    trend_direction = 'neutral'
+
+# گام 3: تعیین نوسان (بر اساس ATR%)
+if current_atr_percent > 1.5:
+    volatility_level = 'high'
+elif current_atr_percent < 0.5:
+    volatility_level = 'low'
+else:
+    volatility_level = 'normal'
+
+# گام 4: ترکیب برای تعیین رژیم نهایی
+if is_breakout:
+    regime = 'breakout'
+elif is_choppy:
+    regime = 'choppy'
+elif trend_strength == 'strong':
+    if volatility_level == 'high':
+        regime = 'strong_trend_high_volatility'
+    else:
+        regime = 'strong_trend'  # یا 'strong_trend_normal'
+elif trend_strength == 'weak':
+    if volatility_level == 'high':
+        regime = 'weak_trend_high_volatility'
+    else:
+        regime = 'weak_trend'
+else:  # no_trend
+    if volatility_level == 'high':
+        regime = 'range_high_volatility'
+    elif volatility_level == 'low':
+        regime = 'tight_range'
+    else:
+        regime = 'range'
 ```
 
-**رژیم‌های ممکن:**
+---
 
-| ADX | ATR% | رژیم نهایی |
-|-----|------|-----------|
-| > 25 | Normal | `strong_trend_normal` ✅ |
-| > 25 | High | `strong_trend_high` ⚠️ |
-| > 25 | Low | `strong_trend_low` ✅ |
-| 20-25 | Normal | `weak_trend_normal` |
-| 20-25 | High | `weak_trend_high` ⚠️ |
-| < 20 | Normal | `range_normal` |
-| < 20 | High | `range_high` ❌ |
+#### جدول کامل رژیم‌های ممکن
 
-### 4.3 تطبیق پارامترها با رژیم بازار
+| رژیم | شرایط ADX | شرایط ATR% | توضیح | اولویت سیگنال |
+|------|----------|-----------|-------|--------------|
+| **breakout** | Any | Any | شکست از محدوده + حجم بالا | 🚀 Trend-Following |
+| **strong_trend** | > 25 | 0.5-1.5 | روند قوی، نوسان عادی | ✅ Trend-Following |
+| **strong_trend_high_volatility** | > 25 | > 1.5 | روند قوی، نوسان بالا | ⚠️ Trend-Following (محتاطانه) |
+| **weak_trend** | 20-25 | 0.5-1.5 | روند ضعیف، نوسان عادی | 🔄 Trend + Reversal |
+| **weak_trend_high_volatility** | 20-25 | > 1.5 | روند ضعیف، نوسان بالا | ⚠️ Trend (خیلی محتاطانه) |
+| **range** | < 20 | 0.5-1.5 | بدون روند، نوسان عادی | 🔄 Reversal (Mean Reversion) |
+| **range_high_volatility** | < 20 | > 1.5 | بدون روند، نوسان بالا | ❌ خطرناک! |
+| **tight_range** | < 20 | < 0.5 | بدون روند، نوسان پایین | 🔄 Reversal (کم ریسک) |
+| **choppy** | < 20 | High BB Width | بازار آشفته، غیرقابل پیش‌بینی | ❌ خیلی خطرناک! |
 
-**محل:** `signal_generator.py:419-500`
+---
+
+#### محاسبه Confidence (اطمینان از تشخیص)
+
+**محل در کد:** `market_regime_detector.py:509-544`
 
 ```python
-adapted_config = self.regime_detector.get_adapted_parameters(regime_info, base_config)
+# گام 1: محاسبه ثبات ADX
+recent_adx = df['adx'].iloc[-5:]  # 5 کندل اخیر
+adx_stability = 1.0 - min(1.0, recent_adx.std() / max(0.1, recent_adx.mean()))
+# هرچه std کمتر → ثبات بیشتر → confidence بالاتر
+
+# گام 2: همبستگی حجم و قیمت (اگر volume موجود باشد)
+if self.use_volume_analysis:
+    correlation = df['close'].pct_change().iloc[-20:].corr(
+        df['volume'].pct_change().iloc[-20:]
+    )
+    volume_price_correlation = abs(correlation)
+
+# گام 3: ترکیب فاکتورها
+confidence_factors = [
+    adx_stability * 0.5,  # ثبات ADX (وزن: 50%)
+    0.3,                  # پایه اطمینان (30%)
+]
+
+# بونوس: اگر breakout با جهت روند همراستا باشد
+if is_breakout and breakout_direction == trend_direction:
+    confidence_factors.append(0.2)  # +20%
+
+# بونوس: اگر حجم بالا و همبستگی قوی باشد
+if volume_ratio > 1.5:
+    confidence_factors.append(0.1 * volume_price_correlation)
+
+# confidence نهایی
+confidence = min(1.0, sum(confidence_factors))
+```
+
+**فرمول Confidence:**
+```
+Confidence = min(1.0, ADX_Stability×0.5 + 0.3 + Breakout_Bonus + Volume_Bonus)
+```
+
+**مثال محاسبه:**
+
+```python
+# سناریو 1: روند قوی با ADX پایدار
+adx_stability = 0.9  # ADX پایدار
+confidence = 0.9 × 0.5 + 0.3 = 0.75  # اطمینان خوب ✅
+
+# سناریو 2: breakout با حجم بالا
+adx_stability = 0.8
+is_breakout = True  # +0.2
+volume_ratio = 2.0  # +0.1 × correlation
+confidence = 0.8 × 0.5 + 0.3 + 0.2 + 0.1 × 0.8 = 0.98  # اطمینان عالی! 🚀
+
+# سناریو 3: رنج با ADX ناپایدار
+adx_stability = 0.4  # ADX متغیر
+confidence = 0.4 × 0.5 + 0.3 = 0.5  # اطمینان متوسط ⚠️
+```
+
+---
+
+### 4.3 خروجی کامل تشخیص رژیم
+
+```python
+# نمونه خروجی واقعی
+{
+    'regime': 'strong_trend',                 # نوع رژیم
+    'trend_strength': 'strong',               # قدرت روند
+    'trend_direction': 'bullish',             # جهت روند
+    'volatility': 'normal',                   # سطح نوسان
+    'confidence': 0.85,                       # اطمینان از تشخیص (0-1)
+    'details': {
+        'adx': 28.5,                          # مقدار ADX
+        'plus_di': 32.0,                      # +DI
+        'minus_di': 18.0,                     # -DI
+        'atr_percent': 1.2,                   # نوسان به درصد
+        'adx_stability': 0.88,                # ثبات ADX
+        'bollinger_width': 2.5,               # عرض باندهای بولینگر
+        'rsi': 62.3,                          # RSI فعلی
+        'volume_change': 0.15,                # تغییرات حجم
+        'volume_ratio': 1.4,                  # نسبت حجم به میانگین
+        'volume_price_correlation': 0.72      # همبستگی حجم و قیمت
+    }
+}
+```
+
+---
+
+### 4.4 تطبیق پارامترها با رژیم بازار
+
+**محل:** `market_regime_detector.py:648-850`
+
+```python
+adapted_config = self.regime_detector.get_strategy_parameters(regime_info, base_config)
 ```
 
 وقتی رژیم بازار مشخص شد، سیستم **خودکار** پارامترهای زیر را تنظیم می‌کند:
 
-#### 1. حداکثر ریسک هر معامله
+---
 
-**پارامتر پایه:** 1.5%
+#### پارامترهای قابل تنظیم
 
-**تطبیق:**
-```python
-if trend_strength == 'strong':
-    risk_modifier = 1.1  # ریسک 10% بیشتر (1.65%)
-elif trend_strength == 'no_trend':
-    risk_modifier = 0.8  # ریسک 20% کمتر (1.2%)
-
-if volatility == 'high':
-    risk_modifier *= 0.7  # ریسک 30% کمتر
-```
-
-**مثال:**
-- رژیم = `strong_trend_normal`: ریسک = 1.5 × 1.1 = **1.65%**
-- رژیم = `range_high`: ریسک = 1.5 × 0.8 × 0.7 = **0.84%**
-
-#### 2. نسبت ریسک به پاداش (Risk-Reward Ratio)
-
-**پارامتر پایه:** 2.5
-
-**تطبیق:**
-```python
-if trend_strength == 'strong':
-    rr_modifier = 1.2  # RR بالاتر در روند قوی (3.0)
-elif trend_strength == 'no_trend':
-    rr_modifier = 0.8  # RR پایین‌تر در رنج (2.0)
-```
-
-**مثال:**
-- رژیم = `strong_trend_normal`: RR = 2.5 × 1.2 = **3.0**
-- رژیم = `range_normal`: RR = 2.5 × 0.8 = **2.0**
-
-#### 3. فاصله Stop Loss
-
-**پارامتر پایه:** 1.5%
-
-**تطبیق:**
-```python
-if volatility == 'high':
-    sl_modifier = 1.3  # SL گسترده‌تر (1.95%)
-elif volatility == 'low':
-    sl_modifier = 0.8  # SL محکم‌تر (1.2%)
-```
-
-**مثال:**
-- رژیم = `strong_trend_high`: SL = 1.5 × 1.3 = **1.95%**
-- رژیم = `strong_trend_low`: SL = 1.5 × 0.8 = **1.2%**
-
-#### 4. حداقل امتیاز سیگنال
-
-**پارامتر پایه:** 33
-
-**تطبیق:**
-```python
-if trend_strength == 'no_trend' or volatility == 'high':
-    score_modifier = 1.1  # شرایط سخت‌تر (36.3)
-```
-
-**مثال:**
-- رژیم = `strong_trend_normal`: حداقل امتیاز = **33**
-- رژیم = `range_high`: حداقل امتیاز = 33 × 1.1 = **36.3**
-
-### 4.4 خروجی کامل تشخیص رژیم
+**1. Stop Loss Distance (فاصله استاپ لاس)**
 
 ```python
-{
-    'regime': 'strong_trend_normal',
-    'trend_strength': 'strong',
-    'trend_direction': 'bullish',
-    'volatility': 'normal',
-    'confidence': 0.85,
-    'details': {
-        'adx': 28.5,
-        'plus_di': 32.0,
-        'minus_di': 18.0,
-        'atr_percent': 1.2
-    }
-}
+# market_regime_detector.py:690-792
+'stop_loss': multiplier  # ضریب تعدیل
 ```
+
+| رژیم | ضریب SL | مقدار نهایی | دلیل |
+|------|---------|------------|------|
+| `strong_trend` | 0.9 | 1.5% × 0.9 = **1.35%** | روند قوی → SL نزدیک‌تر |
+| `strong_trend_high_volatility` | 1.2 | 1.5% × 1.2 = **1.8%** | نوسان بالا → SL گسترده‌تر |
+| `range` | 1.1 | 1.5% × 1.1 = **1.65%** | رنج → SL کمی دورتر |
+| `range_high_volatility` | 1.3 | 1.5% × 1.3 = **1.95%** | رنج + نوسان → SL خیلی دورتر |
+| `choppy` | 1.25 | 1.5% × 1.25 = **1.88%** | آشفته → SL دورتر |
+| `breakout` | 0.85 | 1.5% × 0.85 = **1.28%** | شکست → SL محکم |
+
+---
+
+**2. Risk-Reward Ratio (نسبت ریسک به پاداش)**
+
+```python
+'risk_reward': multiplier
+```
+
+| رژیم | ضریب RR | مقدار نهایی | دلیل |
+|------|---------|------------|------|
+| `strong_trend` | 1.2 | 2.5 × 1.2 = **3.0** | روند قوی → هدف دورتر |
+| `strong_trend_high_volatility` | 1.1 | 2.5 × 1.1 = **2.75** | نوسان بالا → هدف کمی نزدیک‌تر |
+| `range` | 0.9 | 2.5 × 0.9 = **2.25** | رنج → هدف نزدیک‌تر |
+| `range_high_volatility` | 0.8 | 2.5 × 0.8 = **2.0** | رنج + نوسان → هدف خیلی نزدیک |
+| `choppy` | 0.85 | 2.5 × 0.85 = **2.13** | آشفته → هدف نزدیک |
+| `breakout` | 1.3 | 2.5 × 1.3 = **3.25** | شکست → هدف دورتر |
+
+---
+
+**3. Max Risk per Trade (حداکثر ریسک هر معامله)**
+
+```python
+'max_risk': multiplier
+```
+
+| رژیم | ضریب Risk | مقدار نهایی | دلیل |
+|------|-----------|------------|------|
+| `strong_trend` | 1.0 | 1.0% × 1.0 = **1.0%** | شرایط خوب → ریسک عادی |
+| `strong_trend_high_volatility` | 0.85 | 1.0% × 0.85 = **0.85%** | نوسان بالا → ریسک کمتر |
+| `range` | 0.9 | 1.0% × 0.9 = **0.9%** | رنج → ریسک کمتر |
+| `range_high_volatility` | 0.75 | 1.0% × 0.75 = **0.75%** | رنج + نوسان → ریسک خیلی کمتر |
+| `choppy` | 0.7 | 1.0% × 0.7 = **0.7%** | آشفته → ریسک خیلی کم |
+| `breakout` | 1.1 | 1.0% × 1.1 = **1.1%** | فرصت خوب → ریسک کمی بیشتر |
+
+---
+
+**4. Position Size (اندازه معامله)**
+
+```python
+'position_size': multiplier
+```
+
+| رژیم | ضریب Size | اثر | دلیل |
+|------|-----------|-----|------|
+| `strong_trend` | 1.1 | +10% | شرایط عالی → معامله بزرگتر |
+| `strong_trend_high_volatility` | 0.9 | -10% | نوسان بالا → معامله کوچکتر |
+| `range` | 0.95 | -5% | رنج → معامله کمی کوچکتر |
+| `range_high_volatility` | 0.8 | -20% | رنج + نوسان → معامله خیلی کوچکتر |
+| `choppy` | 0.7 | -30% | آشفته → معامله خیلی کوچک |
+| `breakout` | 1.2 | +20% | فرصت عالی → معامله بزرگتر |
+
+---
+
+**5. Signal Weights (وزن سیگنال‌ها)**
+
+```python
+'trend_following_weight': multiplier  # وزن سیگنال‌های Trend-Following
+'reversal_weight': multiplier         # وزن سیگنال‌های Reversal
+```
+
+| رژیم | Trend Weight | Reversal Weight | منطق |
+|------|--------------|-----------------|------|
+| `strong_trend` | 1.5 | 0.6 | تقویت Trend / تضعیف Reversal |
+| `weak_trend` | 1.2 | 0.8 | کمی تقویت Trend |
+| `range` | 0.8 | 1.3 | تضعیف Trend / تقویت Reversal |
+| `tight_range` | 0.7 | 1.4 | تضعیف قوی Trend / تقویت قوی Reversal |
+| `choppy` | 0.5 | 0.8 | تضعیف همه (بازار غیرقابل پیش‌بینی) |
+| `breakout` | 1.6 | 0.5 | تقویت قوی Trend / تضعیف قوی Reversal |
+
+---
+
+**6. Trailing Stop Settings**
+
+```python
+'use_trailing_stop': True/False
+'trailing_stop_activation_percent': multiplier
+'trailing_stop_distance_percent': multiplier
+```
+
+| رژیم | استفاده | فعال‌سازی | فاصله | دلیل |
+|------|---------|----------|-------|------|
+| `strong_trend` | ✅ | 0.9 | 0.9 | سریع و نزدیک (حفظ سود) |
+| `weak_trend` | ✅ | 1.0 | 1.0 | عادی |
+| `range` | ✅ | 1.0 | 0.9 | عادی اما نزدیک |
+| `tight_range` | ❌ | - | - | نیازی نیست |
+| `choppy` | ❌ | - | - | غیرقابل پیش‌بینی |
+| `breakout` | ✅ | 0.8 | 0.7 | خیلی سریع و نزدیک |
+
+---
 
 ### 4.5 تأثیر رژیم بر امتیازدهی
 
 رژیم بازار **مستقیماً** بر امتیاز تأثیر نمی‌گذارد، بلکه:
 
-1. **پارامترها را تغییر می‌دهد** (RR, SL, min_score)
-2. **فیلتر می‌کند**: سیگنال‌های ضعیف در شرایط بد رد می‌شوند
-3. **تأیید می‌کند**: سیگنال همسو با رژیم امتیاز بالاتری می‌گیرد
-
-**مثال:**
-
-```
-سیگنال خرید در تایم‌فریم 5m:
-امتیاز اولیه = 65
-
-رژیم = strong_trend_normal (روند صعودی قوی)
-جهت سیگنال = long (خرید)
-→ همسویی با روند → امتیاز × 1.15 = 74.75 ✅
-
-اگر رژیم = strong_trend_normal ولی سیگنال = short
-→ مخالف روند → امتیاز × 0.85 = 55.25 ⚠️
-```
-
-### 4.6 جدول تأثیر رژیم‌های مختلف
-
-| رژیم | ریسک | RR | SL | حداقل امتیاز | توصیه |
-|------|------|----|----|--------------|-------|
-| `strong_trend_normal` | 1.65% | 3.0 | 1.5% | 33 | ✅ بهترین شرایط |
-| `strong_trend_high` | 1.2% | 3.0 | 1.95% | 36 | ⚠️ محتاطانه |
-| `weak_trend_normal` | 1.5% | 2.5 | 1.5% | 33 | ✅ خوب |
-| `range_normal` | 1.2% | 2.0 | 1.5% | 33 | ⚠️ سیگنال‌های رنج |
-| `range_high` | 0.84% | 2.0 | 1.95% | 36 | ❌ خطرناک |
-
-### 4.7 مثال عملی کامل
-
-**وضعیت:** BTC/USDT در تایم‌فریم 1h
+#### 1. تطبیق پارامترها
 
 ```python
-# تشخیص رژیم
-regime = {
-    'regime': 'strong_trend_high',
-    'trend_direction': 'bullish',
-    'adx': 32.5,
-    'atr_percent': 2.8  # نوسان بالا!
-}
-
-# تطبیق پارامترها
+# مثال: رژیم strong_trend
 adapted_params = {
-    'max_risk_per_trade_percent': 1.2,   # کاهش از 1.5
-    'preferred_risk_reward_ratio': 3.0,  # افزایش به 3.0
-    'default_stop_loss_percent': 1.95,   # افزایش از 1.5
-    'minimum_signal_score': 36.3         # افزایش از 33
+    'stop_loss': 1.35%,        # کمتر از پیش‌فرض (1.5%)
+    'risk_reward': 3.0,        # بیشتر از پیش‌فرض (2.5%)
+    'max_risk': 1.0%,          # عادی
+    'position_size': 1.1×      # 10% بزرگتر
+}
+```
+
+#### 2. تأیید/رد سیگنال‌ها
+
+```python
+# سیگنال Trend-Following در رژیم strong_trend
+signal_score *= 1.5  # تقویت +50%
+
+# سیگنال Reversal در رژیم strong_trend
+signal_score *= 0.6  # تضعیف -40%
+
+# سیگنال Reversal در رژیم range
+signal_score *= 1.3  # تقویت +30%
+```
+
+#### 3. فیلتر کردن
+
+```python
+# در رژیم choppy یا range_high_volatility
+if regime in ['choppy', 'range_high_volatility']:
+    # رد بیشتر سیگنال‌ها
+    minimum_signal_score *= 1.2  # افزایش آستانه پذیرش
+
+    # یا حتی توقف کامل
+    if confidence < 0.5:
+        return None  # هیچ سیگنالی تولید نشود
+```
+
+---
+
+### 4.6 مثال عملی کامل
+
+**سناریو:** BTC/USDT در تایم‌فریم 1h
+
+```python
+# گام 1: تشخیص رژیم
+regime = {
+    'regime': 'strong_trend_high_volatility',
+    'trend_strength': 'strong',
+    'trend_direction': 'bullish',
+    'volatility': 'high',
+    'confidence': 0.82,
+    'details': {
+        'adx': 32.5,           # > 25 → strong
+        'plus_di': 35.0,       # > minus_di → bullish
+        'minus_di': 18.0,
+        'atr_percent': 2.8,    # > 1.5 → high volatility
+        'adx_stability': 0.85,
+        'volume_ratio': 1.8    # حجم بالا
+    }
 }
 
-# سیگنال خرید
+# گام 2: تطبیق پارامترها
+base_config = {
+    'max_risk_per_trade_percent': 1.0,
+    'preferred_risk_reward_ratio': 2.5,
+    'default_stop_loss_percent': 1.5
+}
+
+adapted_params = {
+    'max_risk_per_trade_percent': 1.0 × 0.85 = 0.85,    # کاهش ریسک
+    'preferred_risk_reward_ratio': 2.5 × 1.1 = 2.75,    # هدف کمی دورتر
+    'default_stop_loss_percent': 1.5 × 1.2 = 1.8,       # SL گسترده‌تر
+    'trend_following_weight': 1.3,                      # تقویت Trend
+    'reversal_weight': 0.5,                             # تضعیف Reversal
+    'position_size_multiplier': 0.9                     # معامله کوچکتر
+}
+
+# گام 3: سیگنال خرید (Trend-Following)
 signal = {
     'direction': 'long',
-    'score': 72,
+    'type': 'trend_following',
+    'base_score': 70,
+    'entry': 50000
+}
+
+# اعمال تطبیق‌ها
+signal['adjusted_score'] = 70 × 1.3 = 91  # تقویت Trend-Following
+signal['stop_loss'] = 50000 × (1 - 0.018) = 49100  # 1.8% پایین‌تر
+signal['take_profit'] = 50000 + (900 × 2.75) = 52475  # RR=2.75
+
+# محاسبه Position Size
+account_balance = 10000 USDT
+risk_per_trade = 10000 × 0.0085 = 85 USDT
+risk_per_unit = 50000 - 49100 = 900 USDT
+base_position = 85 / 900 = 0.0944 BTC
+adjusted_position = 0.0944 × 0.9 = 0.085 BTC  # 10% کوچکتر
+
+# نتیجه نهایی
+final_signal = {
+    'direction': 'long',
+    'score': 91,                    # بعد از تقویت
     'entry': 50000,
-    'stop_loss': 49025,  # 1.95% پایین‌تر
-    'take_profit': 52925  # RR=3.0 → 2925 پیپ سود
+    'stop_loss': 49100,             # 1.8% (به دلیل نوسان بالا)
+    'take_profit': 52475,           # RR = 2.75
+    'position_size': 0.085,         # BTC
+    'max_risk': 85,                 # USDT (0.85% حساب)
+    'expected_profit': 2475 × 0.085 = 210 USDT
 }
 
 # بررسی نهایی
-همسویی با روند: ✅ (bullish + long)
-امتیاز > حداقل: ✅ (72 > 36.3)
-→ سیگنال تأیید می‌شود!
+✅ همسویی با روند: bullish + long
+✅ امتیاز بالا: 91 > 60
+✅ confidence بالا: 0.82 > 0.6
+✅ regime مناسب: strong_trend
+⚠️ نوسان بالا: ریسک و position کاهش یافت
+→ سیگنال تأیید می‌شود با پارامترهای محافظه‌کارانه!
 ```
+
+---
+
+### 4.7 جدول کامل تأثیر رژیم‌ها
+
+| رژیم | SL | RR | Risk | Size | Trend W. | Reversal W. | Trailing | توصیه |
+|------|----|----|------|------|----------|-------------|----------|-------|
+| `strong_trend` | 0.9× | 1.2× | 1.0× | 1.1× | 1.5× | 0.6× | ✅ (fast) | ✅✅ عالی |
+| `strong_trend_high_volatility` | 1.2× | 1.1× | 0.85× | 0.9× | 1.3× | 0.5× | ✅ (normal) | ⚠️ خوب اما محتاط |
+| `weak_trend` | 0.95× | 1.05× | 0.9× | 1.0× | 1.2× | 0.8× | ✅ (normal) | ✅ خوب |
+| `weak_trend_high_volatility` | 1.15× | 1.0× | 0.8× | 0.85× | 1.1× | 0.7× | ✅ (slow) | ⚠️ محتاطانه |
+| `range` | 1.1× | 0.9× | 0.9× | 0.95× | 0.8× | 1.3× | ✅ (normal) | 🔄 Reversal بهتر |
+| `range_high_volatility` | 1.3× | 0.8× | 0.75× | 0.8× | 0.7× | 1.2× | ✅ (slow) | ❌ خطرناک |
+| `tight_range` | 1.05× | 0.95× | 0.95× | 1.0× | 0.7× | 1.4× | ❌ | 🔄 Scalping |
+| `choppy` | 1.25× | 0.85× | 0.7× | 0.7× | 0.5× | 0.8× | ❌ | ❌❌ خیلی خطرناک |
+| `breakout` | 0.85× | 1.3× | 1.1× | 1.2× | 1.6× | 0.5× | ✅ (very fast) | ✅✅✅ فرصت عالی |
 
 ---
 
@@ -1945,8 +2333,30 @@ signal = {
 
 ✅ **مزایا:**
 - تطبیق خودکار با شرایط بازار
-- کاهش ریسک در شرایط خطرناک
-- افزایش سود در شرایط مناسب
+- کاهش ریسک در شرایط خطرناک (choppy, range_high_volatility)
+- افزایش سود در شرایط مناسب (strong_trend, breakout)
+- تقویت/تضعیف سیگنال‌ها بر اساس regime
+- جلوگیری از معامله در شرایط نامناسب
+
+⚠️ **نکات مهم:**
+- در رژیم `choppy` یا `range_high_volatility` → **توقف یا کاهش شدید معاملات**
+- در رژیم `breakout` → **افزایش شدید فعالیت** (فرصت طلایی)
+- همیشه به `confidence` توجه کن: confidence < 0.5 → **احتیاط بیشتر**
+- Regime detection تأخیر دارد → نباید تنها ابزار تصمیم‌گیری باشد
+
+🎯 **بهترین رژیم‌ها:**
+1. **breakout**: فرصت طلایی 🏆
+2. **strong_trend**: بهترین شرایط Trend-Following ✅
+3. **tight_range**: مناسب Mean Reversion و Scalping ✅
+
+❌ **بدترین رژیم‌ها:**
+1. **choppy**: خیلی خطرناک! 🚫
+2. **range_high_volatility**: بسیار خطرناک! 🚫
+3. **weak_trend_high_volatility**: خطرناک ⚠️
+
+---
+
+**نکته طلایی:** سیستم هوشمند است و در رژیم‌های بد، **خودکار** معاملات را کاهش یا متوقف می‌کند!
 - فیلتر کردن سیگنال‌های ضعیف
 
 ⚠️ **نکات مهم:**
