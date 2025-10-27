@@ -656,46 +656,632 @@ final_score = raw_score * trend_multiplier * regime_multiplier * volatility_fact
 
 ---
 
-#### مرحله 2: تحلیل اندیکاتورهای مومنتوم (RSI, Stochastic)
+#### مرحله 2: تحلیل اندیکاتورهای مومنتوم (RSI, Stochastic, MACD, MFI)
+
+**محل در کد:** `signal_generator.py:3511-3700`
+
 ```python
 analysis_data['momentum'] = self.analyze_momentum_indicators(df)
 ```
 
-**اندیکاتورهای محاسبه شده:**
+**چه کاری انجام می‌شود؟**
+1. محاسبه اندیکاتورهای مومنتوم (MACD, RSI, Stochastic, MFI)
+2. تشخیص سیگنال‌های خرید/فروش بر اساس هر اندیکاتور
+3. شناسایی واگرایی‌ها (Divergence) بین قیمت و اندیکاتورها
+4. محاسبه امتیاز کلی momentum (bullish یا bearish)
 
-1. **RSI (Relative Strength Index)**
-   - محاسبه RSI با دوره 14
-   - شناسایی اشباع خرید/فروش
+---
 
-   **خروجی:**
-   ```python
-   {
-       'rsi': 45.2,
-       'rsi_status': 'neutral',  # oversold, overbought, neutral
-       'rsi_divergence': False   # واگرایی RSI
-   }
-   ```
+##### 2.1 اندیکاتورهای محاسبه شده
 
-2. **Stochastic Oscillator**
-   - محاسبه %K و %D
-   - شناسایی تقاطع‌ها
+###### 1. **MACD (Moving Average Convergence Divergence)**
 
-   **خروجی:**
-   ```python
-   {
-       'stoch_k': 55.3,
-       'stoch_d': 50.1,
-       'stoch_signal': 'bullish_cross'  # یا 'bearish_cross' یا 'none'
-   }
-   ```
+**محاسبه:**
+```python
+# signal_generator.py:3532
+macd, macd_signal, macd_hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+```
 
-**امتیازدهی:**
-- RSI < 30 (oversold) + سیگنال خرید → **+10 تا +15 امتیاز**
-- RSI > 70 (overbought) + سیگنال فروش → **+10 تا +15 امتیاز**
-- Stochastic Cross + تأیید جهت → **+5 تا +10 امتیاز**
-- واگرایی RSI → **+15 تا +20 امتیاز** (سیگنال قوی)
+**سیگنال‌های MACD:**
 
-**نکته مهم:** RSI و Stochastic هر دو **کمکی** هستند و به تنهایی سیگنال تولید نمی‌کنند، بلکه امتیاز سیگنال را تقویت می‌کنند.
+| سیگنال | شرط | امتیاز پایه | توضیح |
+|--------|-----|-----------|-------|
+| `macd_bullish_crossover` | MACD > Signal & قبلاً ≤ بود | **2.2** | تقاطع صعودی MACD |
+| `macd_bearish_crossover` | MACD < Signal & قبلاً ≥ بود | **2.2** | تقاطع نزولی MACD |
+| `macd_bullish_zero_cross` | MACD > 0 & قبلاً ≤ 0 بود | **1.8** | عبور صعودی از خط صفر |
+| `macd_bearish_zero_cross` | MACD < 0 & قبلاً ≥ 0 بود | **1.8** | عبور نزولی از خط صفر |
+
+**کد واقعی:**
+```python
+# signal_generator.py:3585-3607
+# 1. MACD Crossover
+if curr_macd > curr_sig and prev_macd <= prev_sig:
+    momentum_signals.append({
+        'type': 'macd_bullish_crossover',
+        'score': self.pattern_scores.get('macd_bullish_crossover', 2.2)
+    })
+elif curr_macd < curr_sig and prev_macd >= prev_sig:
+    momentum_signals.append({
+        'type': 'macd_bearish_crossover',
+        'score': self.pattern_scores.get('macd_bearish_crossover', 2.2)
+    })
+
+# 2. MACD Zero Line Cross
+if curr_macd > 0 and prev_macd <= 0:
+    momentum_signals.append({
+        'type': 'macd_bullish_zero_cross',
+        'score': self.pattern_scores.get('macd_bullish_zero_cross', 1.8)
+    })
+elif curr_macd < 0 and prev_macd >= 0:
+    momentum_signals.append({
+        'type': 'macd_bearish_zero_cross',
+        'score': self.pattern_scores.get('macd_bearish_zero_cross', 1.8)
+    })
+```
+
+---
+
+###### 2. **RSI (Relative Strength Index)**
+
+**محاسبه:**
+```python
+# signal_generator.py:3538
+rsi = talib.RSI(close, timeperiod=14)
+```
+
+**سیگنال‌های RSI:**
+
+| سیگنال | شرط | امتیاز پایه | توضیح |
+|--------|-----|-----------|-------|
+| `rsi_oversold_reversal` | RSI < 30 **و** RSI > prev_RSI | **2.3** | بازگشت از اشباع فروش |
+| `rsi_overbought_reversal` | RSI > 70 **و** RSI < prev_RSI | **2.3** | بازگشت از اشباع خرید |
+| `rsi_bullish_divergence` | قیمت LL ولی RSI HL | **3.5 × strength** | واگرایی صعودی (قوی) |
+| `rsi_bearish_divergence` | قیمت HH ولی RSI LH | **3.5 × strength** | واگرایی نزولی (قوی) |
+
+**⚠️ نکته مهم:** برای سیگنال reversal، فقط `RSI < 30` کافی نیست! باید **شروع به بازگشت** هم کرده باشد:
+
+```python
+# signal_generator.py:3610-3619
+# 3. RSI Oversold/Overbought Reversal
+if curr_rsi < 30 and curr_rsi > prev_rsi:  # ✅ باید در حال افزایش باشد
+    momentum_signals.append({
+        'type': 'rsi_oversold_reversal',
+        'score': self.pattern_scores.get('rsi_oversold_reversal', 2.3)
+    })
+elif curr_rsi > 70 and curr_rsi < prev_rsi:  # ✅ باید در حال کاهش باشد
+    momentum_signals.append({
+        'type': 'rsi_overbought_reversal',
+        'score': self.pattern_scores.get('rsi_overbought_reversal', 2.3)
+    })
+```
+
+**مثال عملی:**
+
+```python
+# سناریو 1: RSI oversold اما هنوز در حال سقوط ❌
+curr_rsi = 25
+prev_rsi = 28
+# نتیجه: سیگنال تولید نمی‌شود (هنوز momentum نزولی است)
+
+# سناریو 2: RSI oversold و شروع به بازگشت ✅
+curr_rsi = 28
+prev_rsi = 25
+# نتیجه: سیگنال 'rsi_oversold_reversal' با امتیاز 2.3
+```
+
+**وضعیت RSI:**
+```python
+# signal_generator.py:3669
+rsi_condition = 'oversold' if curr_rsi < 30 else 'overbought' if curr_rsi > 70 else 'neutral'
+```
+
+---
+
+###### 3. **Stochastic Oscillator**
+
+**محاسبه:**
+```python
+# signal_generator.py:3546
+slowk, slowd = talib.STOCH(high, low, close,
+                           fastk_period=14,
+                           slowk_period=3,
+                           slowd_period=3)
+```
+
+**سیگنال‌های Stochastic:**
+
+| سیگنال | شرط | امتیاز پایه | توضیح |
+|--------|-----|-----------|-------|
+| `stochastic_oversold_bullish_cross` | K و D < 20 **و** K عبور از D به بالا | **2.5** | تقاطع صعودی در oversold |
+| `stochastic_overbought_bearish_cross` | K و D > 80 **و** K عبور از D به پایین | **2.5** | تقاطع نزولی در overbought |
+
+**⚠️ شرایط دقیق Stochastic Cross:**
+
+```python
+# signal_generator.py:3621-3631
+# 4. Stochastic Crossover in Oversold/Overbought
+if curr_k < 20 and curr_d < 20 and curr_k > curr_d and prev_k <= prev_d:
+    # ✅ همه شرایط:
+    # 1. K < 20 (oversold)
+    # 2. D < 20 (oversold)
+    # 3. K > D (الان)
+    # 4. prev_K <= prev_D (قبلاً)
+    # = تقاطع صعودی در ناحیه oversold
+    momentum_signals.append({
+        'type': 'stochastic_oversold_bullish_cross',
+        'score': self.pattern_scores.get('stochastic_oversold_bullish_cross', 2.5)
+    })
+```
+
+**مثال عملی:**
+
+```python
+# سناریو 1: Stochastic در oversold اما هنوز تقاطع نداریم ❌
+curr_k = 15, curr_d = 18  # K < D
+prev_k = 12, prev_d = 20
+# نتیجه: سیگنال تولید نمی‌شود
+
+# سناریو 2: Stochastic تقاطع صعودی در oversold ✅
+curr_k = 18, curr_d = 15  # K > D (الان)
+prev_k = 12, prev_d = 20  # K < D (قبلاً)
+# نتیجه: سیگنال 'stochastic_oversold_bullish_cross' با امتیاز 2.5
+```
+
+**وضعیت Stochastic:**
+```python
+# signal_generator.py:3670
+stoch_condition = 'oversold' if curr_k < 20 and curr_d < 20 else \
+                  'overbought' if curr_k > 80 and curr_d > 80 else \
+                  'neutral'
+```
+
+---
+
+###### 4. **MFI (Money Flow Index)**
+
+**محاسبه:**
+```python
+# signal_generator.py:3549-3558
+if 'volume' in df.columns:
+    mfi = talib.MFI(high, low, close, volume, timeperiod=14)
+```
+
+**⚠️ نکته:** MFI فقط زمانی محاسبه می‌شود که داده حجم معاملات در دسترس باشد.
+
+**سیگنال‌های MFI:**
+
+| سیگنال | شرط | امتیاز پایه | توضیح |
+|--------|-----|-----------|-------|
+| `mfi_oversold_reversal` | MFI < 20 **و** MFI > prev_MFI | **2.4** | بازگشت از اشباع فروش با حجم |
+| `mfi_overbought_reversal` | MFI > 80 **و** MFI < prev_MFI | **2.4** | بازگشت از اشباع خرید با حجم |
+
+**کد واقعی:**
+```python
+# signal_generator.py:3633-3644
+# 5. MFI Signals
+if curr_mfi is not None:
+    if curr_mfi < 20 and curr_mfi > prev_mfi:
+        momentum_signals.append({
+            'type': 'mfi_oversold_reversal',
+            'score': self.pattern_scores.get('mfi_oversold_reversal', 2.4)
+        })
+    elif curr_mfi > 80 and curr_mfi < prev_mfi:
+        momentum_signals.append({
+            'type': 'mfi_overbought_reversal',
+            'score': self.pattern_scores.get('mfi_overbought_reversal', 2.4)
+        })
+```
+
+**تفاوت MFI با RSI:**
+- **RSI:** فقط قیمت را در نظر می‌گیرد
+- **MFI:** قیمت + حجم معاملات را ترکیب می‌کند
+- **MFI** دقیق‌تر است چون حجم معاملات را هم لحاظ می‌کند
+
+**وضعیت MFI:**
+```python
+# signal_generator.py:3671
+mfi_condition = 'oversold' if curr_mfi is not None and curr_mfi < 20 else \
+                'overbought' if curr_mfi is not None and curr_mfi > 80 else \
+                'neutral'
+```
+
+---
+
+##### 2.2 تشخیص واگرایی (Divergence Detection)
+
+**محل در کد:** `signal_generator.py:2873-3067`
+
+**واگرایی چیست؟**
+وقتی که قیمت و اندیکاتور در جهت مخالف حرکت می‌کنند، نشان‌دهنده **ضعف روند فعلی** و احتمال **بازگشت روند** است.
+
+###### انواع واگرایی:
+
+**1. واگرایی صعودی (Bullish Divergence):**
+- **قیمت:** کف‌های پایین‌تر می‌سازد (Lower Lows - LL)
+- **اندیکاتور (RSI/MACD):** کف‌های بالاتر می‌سازد (Higher Lows - HL)
+- **معنی:** روند نزولی در حال ضعیف شدن است → احتمال بازگشت صعودی 📈
+
+**2. واگرایی نزولی (Bearish Divergence):**
+- **قیمت:** سقف‌های بالاتر می‌سازد (Higher Highs - HH)
+- **اندیکاتور (RSI/MACD):** سقف‌های پایین‌تر می‌سازد (Lower Highs - LH)
+- **معنی:** روند صعودی در حال ضعیف شدن است → احتمال بازگشت نزولی 📉
+
+---
+
+###### فرآیند تشخیص واگرایی در کد:
+
+**گام 1: یافتن قله‌ها و دره‌ها (Peaks & Valleys)**
+
+```python
+# signal_generator.py:2900-2912
+# یافتن peaks و valleys برای قیمت
+price_peaks_idx, price_valleys_idx = self.find_peaks_and_valleys(
+    price_window.values,
+    distance=5,         # حداقل فاصله بین دو peak/valley
+    prominence_factor=0.05,  # حداقل برجستگی برای قیمت (5%)
+    window_size=period
+)
+
+# یافتن peaks و valleys برای اندیکاتور
+ind_peaks_idx, ind_valleys_idx = self.find_peaks_and_valleys(
+    indicator_window.values,
+    distance=5,
+    prominence_factor=0.1,  # حداقل برجستگی برای اندیکاتور (10%)
+    window_size=period
+)
+```
+
+**گام 2: تشخیص واگرایی نزولی (Bearish Divergence)**
+
+```python
+# signal_generator.py:2933-2993
+# شرط: قیمت Higher Highs اما اندیکاتور Lower Highs
+if len(price_peaks_abs) >= 2 and len(ind_peaks_abs) >= 2:
+    # بررسی 5 peak اخیر
+    for i in range(max_peaks_to_check - 1):
+        p1_price = price_window.loc[p1_idx]
+        p2_price = price_window.loc[p2_idx]
+
+        # قیمت باید Higher High باشد
+        if p2_price <= p1_price:
+            continue  # این واگرایی نیست
+
+        ind_p1_val = indicator_window.loc[ind_p1_idx]
+        ind_p2_val = indicator_window.loc[ind_p2_idx]
+
+        # اندیکاتور باید Lower High باشد
+        if ind_p2_val < ind_p1_val:
+            # ✅ واگرایی نزولی تشخیص داده شد!
+
+            # محاسبه قدرت واگرایی
+            price_change_pct = (p2_price - p1_price) / p1_price
+            ind_change_pct = (ind_p1_val - ind_p2_val) / ind_p1_val
+            div_strength = min(1.0, (price_change_pct + ind_change_pct) / 2 * 5)
+
+            # امتیاز نهایی
+            div_score = 3.5 * div_strength  # base_score × strength
+```
+
+**گام 3: محاسبه قدرت واگرایی (Divergence Strength)**
+
+```python
+# signal_generator.py:2969-2971
+price_change_pct = (p2_price - p1_price) / p1_price  # درصد تغییر قیمت
+ind_change_pct = (ind_p1_val - ind_p2_val) / ind_p1_val  # درصد تغییر اندیکاتور
+div_strength = min(1.0, (price_change_pct + ind_change_pct) / 2 * 5)  # نرمال‌سازی به 0-1
+```
+
+**فرمول strength:**
+```
+strength = min(1.0, (price_change% + indicator_change%) / 2 × 5)
+```
+
+**مثال محاسبه:**
+```python
+# واگرایی نزولی قوی:
+# قیمت: 100 → 110 (افزایش 10%)
+# RSI: 80 → 70 (کاهش 12.5%)
+price_change_pct = 0.10
+ind_change_pct = 0.125
+div_strength = min(1.0, (0.10 + 0.125) / 2 * 5) = min(1.0, 0.5625) = 0.56
+
+# امتیاز نهایی:
+div_score = 3.5 * 0.56 = 1.96
+```
+
+**گام 4: فیلتر کیفیت واگرایی**
+
+```python
+# signal_generator.py:2974
+if div_strength >= self.divergence_sensitivity:
+    # فقط واگرایی‌های با کیفیت کافی ذخیره می‌شوند
+    signals.append({
+        'type': 'rsi_bearish_divergence',
+        'direction': 'bearish',
+        'score': div_score,
+        'strength': float(div_strength),
+        'details': {
+            'price_p1': float(p1_price),
+            'price_p2': float(p2_price),
+            'ind_p1': float(ind_p1_val),
+            'ind_p2': float(ind_p2_val),
+            'price_change_pct': float(price_change_pct),
+            'ind_change_pct': float(ind_change_pct)
+        }
+    })
+```
+
+**گام 5: فیلتر زمانی (Recent Signals Only)**
+
+```python
+# signal_generator.py:3055-3059
+# فقط واگرایی‌های اخیر (10 کندل آخر) را در نظر بگیر
+recent_candle_limit = 10
+if len(signals) > 0 and len(price_window) > recent_candle_limit:
+    recent_threshold = price_window.index[-recent_candle_limit]
+    signals = [s for s in signals if s['index'] >= recent_threshold]
+```
+
+---
+
+###### مثال واقعی واگرایی:
+
+**سناریو: واگرایی صعودی RSI**
+
+```python
+# داده‌های قیمت (5 کندل اخیر):
+prices = [100, 95, 90, 88, 85]  # قیمت در حال سقوط
+
+# داده‌های RSI:
+rsi_values = [40, 35, 33, 34, 36]  # RSI در حال افزایش در کف‌ها
+
+# تحلیل:
+# Peak 1 (price): 100, RSI: 40
+# Valley 1: 90, RSI: 33
+# Valley 2: 85, RSI: 36  # ✅ کف جدید قیمت پایین‌تر اما RSI بالاتر
+
+# نتیجه:
+{
+    'type': 'rsi_bullish_divergence',
+    'direction': 'bullish',
+    'score': 2.1,  # 3.5 × 0.6
+    'strength': 0.6,
+    'details': {
+        'price_p1': 90.0,
+        'price_p2': 85.0,
+        'ind_p1': 33.0,
+        'ind_p2': 36.0,
+        'price_change_pct': -0.056,  # قیمت 5.6% کاهش
+        'ind_change_pct': 0.091      # RSI 9.1% افزایش
+    }
+}
+```
+
+---
+
+##### 2.3 خروجی کامل تابع analyze_momentum_indicators
+
+```python
+# signal_generator.py:3673-3689
+results = {
+    'status': 'ok',
+    'direction': 'bullish',  # یا 'bearish' یا 'neutral'
+    'bullish_score': 7.8,    # مجموع امتیازات صعودی
+    'bearish_score': 2.2,    # مجموع امتیازات نزولی
+    'signals': [
+        {
+            'type': 'macd_bullish_crossover',
+            'score': 2.2
+        },
+        {
+            'type': 'rsi_oversold_reversal',
+            'score': 2.3
+        },
+        {
+            'type': 'stochastic_oversold_bullish_cross',
+            'score': 2.5
+        },
+        {
+            'type': 'rsi_bullish_divergence',
+            'direction': 'bullish',
+            'score': 2.1,
+            'strength': 0.6,
+            'details': {...}
+        }
+    ],
+    'details': {
+        'rsi': 32.5,
+        'rsi_condition': 'oversold',
+        'macd': 0.15,
+        'macd_signal': 0.10,
+        'macd_condition': 'bullish',
+        'stoch_k': 18.5,
+        'stoch_d': 15.2,
+        'stoch_condition': 'oversold',
+        'mfi': 25.3,
+        'mfi_condition': 'neutral'
+    }
+}
+```
+
+---
+
+##### 2.4 امتیازدهی نهایی
+
+**جدول امتیازات پایه (Base Scores):**
+
+| سیگنال | امتیاز پایه | توضیح |
+|--------|-----------|-------|
+| `macd_bullish_crossover` | 2.2 | تقاطع صعودی MACD |
+| `macd_bearish_crossover` | 2.2 | تقاطع نزولی MACD |
+| `macd_bullish_zero_cross` | 1.8 | عبور از صفر به بالا |
+| `macd_bearish_zero_cross` | 1.8 | عبور از صفر به پایین |
+| `rsi_oversold_reversal` | 2.3 | بازگشت از اشباع فروش |
+| `rsi_overbought_reversal` | 2.3 | بازگشت از اشباع خرید |
+| `rsi_bullish_divergence` | **3.5 × strength** | واگرایی صعودی (0-3.5) |
+| `rsi_bearish_divergence` | **3.5 × strength** | واگرایی نزولی (0-3.5) |
+| `stochastic_oversold_bullish_cross` | 2.5 | تقاطع صعودی در oversold |
+| `stochastic_overbought_bearish_cross` | 2.5 | تقاطع نزولی در overbought |
+| `mfi_oversold_reversal` | 2.4 | بازگشت MFI از اشباع فروش |
+| `mfi_overbought_reversal` | 2.4 | بازگشت MFI از اشباع خرید |
+
+**⚠️ نکته مهم:** این امتیازات **base scores** هستند و در مراحل بعد:
+1. با ضرایب دیگر (trend, alignment, regime) ضرب می‌شوند
+2. نرمال‌سازی می‌شوند (scale به 0-100)
+3. در فرمول نهایی ترکیب می‌شوند
+
+**مثال محاسبه:**
+```python
+# سیگنال خرید با momentum قوی:
+momentum_signals = [
+    {'type': 'macd_bullish_crossover', 'score': 2.2},      # ✅
+    {'type': 'rsi_oversold_reversal', 'score': 2.3},       # ✅
+    {'type': 'stochastic_oversold_bullish_cross', 'score': 2.5},  # ✅
+    {'type': 'rsi_bullish_divergence', 'score': 2.1}       # ✅ (3.5 × 0.6)
+]
+
+# مجموع امتیازات صعودی:
+bullish_score = 2.2 + 2.3 + 2.5 + 2.1 = 9.1
+
+# نتیجه: momentum قوی صعودی ✅
+```
+
+---
+
+##### 2.5 نحوه استفاده در امتیازدهی نهایی
+
+**Momentum به عنوان یک component در امتیاز کلی:**
+
+```python
+# در مراحل بعد، momentum signals به structure_score اضافه می‌شوند
+for signal in momentum_signals:
+    if signal['type'] in signal_direction:  # اگر با جهت سیگنال همراستا باشد
+        structure_score += signal['score']
+    else:  # اگر مخالف باشد
+        structure_score -= signal['score'] * 0.5  # جریمه کمتر
+```
+
+**نقش Momentum در تصمیم‌گیری:**
+
+1. **تأیید کننده (Confirmation):**
+   - اگر Price Action سیگنال خرید می‌دهد + momentum هم bullish است → قوی‌تر ✅
+
+2. **هشدار دهنده (Warning):**
+   - اگر Price Action سیگنال خرید می‌دهد + momentum bearish است → ضعیف‌تر ⚠️
+
+3. **واگرایی = سیگنال قوی:**
+   - واگرایی نشان‌دهنده تغییر روند است
+   - امتیاز بالاتر (تا 3.5) نسبت به سایر momentum signals
+
+---
+
+##### 2.6 مثال کامل: سیگنال خرید با Momentum Analysis
+
+```python
+# شرایط بازار: BTC در روند نزولی، در ناحیه حمایت
+
+# 1. Momentum Indicators:
+momentum = {
+    'rsi': 28,                    # oversold ✅
+    'rsi_condition': 'oversold',
+    'macd': -50,
+    'macd_signal': -55,           # MACD بالای signal (شروع بازگشت) ✅
+    'stoch_k': 18,
+    'stoch_d': 15,                # K بالای D در oversold ✅
+    'mfi': 22
+}
+
+# 2. Signals تشخیص داده شده:
+momentum_signals = [
+    {
+        'type': 'rsi_oversold_reversal',
+        'score': 2.3
+    },
+    {
+        'type': 'macd_bullish_crossover',
+        'score': 2.2
+    },
+    {
+        'type': 'stochastic_oversold_bullish_cross',
+        'score': 2.5
+    },
+    {
+        'type': 'rsi_bullish_divergence',
+        'score': 2.8,  # 3.5 × 0.8 (قوی)
+        'strength': 0.8,
+        'details': {
+            'price_p1': 30000,
+            'price_p2': 29500,  # قیمت کف جدید زد
+            'ind_p1': 25,
+            'ind_p2': 28         # RSI بالاتر رفت ✅
+        }
+    }
+]
+
+# 3. امتیاز کلی momentum:
+bullish_score = 2.3 + 2.2 + 2.5 + 2.8 = 9.8  # قوی!
+bearish_score = 0
+
+# 4. نتیجه:
+# Momentum به شدت bullish است ✅
+# + واگرایی قوی (strength=0.8) ✅
+# + همه اندیکاتورها در oversold و شروع بازگشت ✅
+# = احتمال بازگشت صعودی بسیار بالا 🚀
+```
+
+---
+
+##### 2.7 نکات کلیدی و بهترین شیوه‌ها
+
+**✅ نکات مثبت کد فعلی:**
+
+1. **عدم تولید سیگنال مستقیم:**
+   - Momentum اندیکاتورها فقط **تأیید کننده** هستند
+   - سیگنال اصلی از Price Action/Structure می‌آید
+
+2. **شرط Reversal دقیق:**
+   - فقط oversold/overbought کافی نیست
+   - باید شروع به بازگشت هم کرده باشد
+
+3. **تشخیص واگرایی پیشرفته:**
+   - الگوریتم پیچیده برای یافتن peaks/valleys
+   - محاسبه strength بر اساس درصد تغییرات
+   - فیلتر کیفیت و زمانی
+
+4. **استفاده از Caching:**
+   - اندیکاتورها فقط یک بار محاسبه می‌شوند
+   - بهبود performance
+
+**⚠️ محدودیت‌ها:**
+
+1. **امتیازات Base نه Final:**
+   - امتیازات مستند شده (10-15) با کد (2.3) تفاوت دارند
+   - امتیازات کد base scores هستند که بعداً scale می‌شوند
+
+2. **MFI گاهی موجود نیست:**
+   - فقط با داده volume کار می‌کند
+   - در برخی exchanges/timeframes volume دقیق نیست
+
+3. **واگرایی پیچیده است:**
+   - نیاز به حداقل 20 کندل
+   - ممکن است false positives تولید کند
+
+**🎯 کاربرد در Strategy:**
+
+```python
+# استفاده از momentum برای تصمیم‌گیری:
+if momentum['direction'] == 'bullish':
+    if momentum['bullish_score'] > 7:
+        # momentum قوی → افزایش position size
+        position_size *= 1.2
+    elif momentum['bearish_score'] > momentum['bullish_score']:
+        # momentum مخالف → کاهش position size یا skip
+        position_size *= 0.5
+```
+
+---
+
+**نکته مهم:** RSI, Stochastic, MACD و MFI هر کدام **کمکی** هستند و به تنهایی سیگنال تولید نمی‌کنند، بلکه امتیاز سیگنال‌های اصلی (Price Action, Structure, S/R) را **تقویت یا تضعیف** می‌کنند.
 
 ---
 
