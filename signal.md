@@ -1286,28 +1286,291 @@ if momentum['direction'] == 'bullish':
 ---
 
 #### مرحله 3: تحلیل حجم معاملات (Volume Analysis)
+
+**📍 کد مرجع:** `signal_generator.py:1658-1717` - تابع `analyze_volume_trend()`
+
 ```python
-analysis_data['volume'] = self.analyze_volume_trend(df)
+analysis_data['volume'] = self.analyze_volume_trend(df, window=20)
 ```
 
-**چه بررسی می‌شود؟**
-- مقایسه حجم فعلی با میانگین حجم
-- تشخیص افزایش ناگهانی حجم
-- همبستگی حجم با حرکت قیمت
+حجم معاملات یکی از مهمترین عوامل تأیید کننده سیگنال‌های معاملاتی است. این بخش حجم معاملات فعلی را با میانگین متحرک حجم مقایسه کرده و الگوهای حجمی را شناسایی می‌کند.
 
-**خروجی:**
+---
+
+##### 🔍 فرآیند تحلیل حجم
+
+**گام 1: محاسبه میانگین متحرک حجم (Volume SMA)**
+
+```python
+vol_sma = vol_series.rolling(window=20, min_periods=20).mean()
+```
+
+- از میانگین متحرک ساده 20 دوره‌ای استفاده می‌شود
+- این میانگین به عنوان مبنای مقایسه برای حجم فعلی عمل می‌کند
+
+**گام 2: محاسبه نسبت حجم (Volume Ratio)**
+
+```python
+vol_ratio = current_volume / vol_sma
+```
+
+**فرمول:**
+```
+Volume Ratio = حجم فعلی / میانگین متحرک 20 دوره‌ای حجم
+```
+
+این نسبت نشان می‌دهد که حجم فعلی چند برابر میانگین حجم اخیر است.
+
+**گام 3: طبقه‌بندی الگوی حجمی**
+
+بر اساس **آستانه پایه (Base Threshold)**: `volume_multiplier_threshold = 1.3` (پیش‌فرض)
+
+| Volume Ratio | Trend | Pattern | توضیح |
+|-------------|-------|---------|-------|
+| `> 2.6` (2.0 × 1.3) | `strongly_increasing` | `climax_volume` | حجم بسیار بالا - احتمال اوج حرکت |
+| `> 1.95` (1.5 × 1.3) | `increasing` | `spike` | افزایش ناگهانی حجم |
+| `> 1.3` | `increasing` | `above_average` | حجم بالاتر از متوسط |
+| `< 0.867` (1/1.3) | `decreasing` | `below_average` | حجم کمتر از متوسط |
+| `< 0.51` (1/(1.3×1.5)) | `strongly_decreasing` | `dry_up` | حجم بسیار پایین - خشک شدن بازار |
+| بقیه موارد | `neutral` | `normal` | حجم عادی |
+
+**کد واقعی از implementation:**
+```python
+# signal_generator.py:1687-1704
+if current_ratio > self.volume_multiplier_threshold * 2.0:
+    results['trend'] = 'strongly_increasing'
+    results['pattern'] = 'climax_volume'
+elif current_ratio > self.volume_multiplier_threshold * 1.5:
+    results['trend'] = 'increasing'
+    results['pattern'] = 'spike'
+elif current_ratio > self.volume_multiplier_threshold:
+    results['trend'] = 'increasing'
+    results['pattern'] = 'above_average'
+elif current_ratio < 1.0 / (self.volume_multiplier_threshold * 1.5):
+    results['trend'] = 'strongly_decreasing'
+    results['pattern'] = 'dry_up'
+elif current_ratio < 1.0 / self.volume_multiplier_threshold:
+    results['trend'] = 'decreasing'
+    results['pattern'] = 'below_average'
+else:
+    results['trend'] = 'neutral'
+    results['pattern'] = 'normal'
+```
+
+**گام 4: تعیین تأیید حجمی (Volume Confirmation)**
+
+```python
+is_confirmed_by_volume = current_ratio > volume_multiplier_threshold
+```
+
+**شرط تأیید:**
+- اگر `Volume Ratio > 1.3` → سیگنال توسط حجم تأیید می‌شود
+- اگر `Volume Ratio ≤ 1.3` → سیگنال توسط حجم تأیید نمی‌شود
+
+**گام 5: محاسبه روند میانگین حجم (Volume MA Trend)**
+
+اگر حداقل 10 کندل موجود باشد:
+
+```python
+vol_sma_slope = (vol_sma[-1] - vol_sma[-10]) / vol_sma[-10]
+
+if vol_sma_slope > 0.05:    # افزایش 5%
+    volume_ma_trend = 'increasing'
+elif vol_sma_slope < -0.05:  # کاهش 5%
+    volume_ma_trend = 'decreasing'
+else:
+    volume_ma_trend = 'flat'
+```
+
+این نشان می‌دهد که روند کلی حجم در حال افزایش، کاهش یا ثابت است.
+
+---
+
+##### 📊 خروجی تابع analyze_volume_trend
+
 ```python
 {
-    'volume_trend': 'increasing',  # یا 'decreasing'
-    'volume_ratio': 1.8,           # نسبت به میانگین
-    'volume_confirmation': True    # تأیید حرکت قیمت
+    'status': 'ok',                        # وضعیت محاسبات
+    'current_ratio': 1.8,                  # نسبت حجم فعلی به میانگین
+    'trend': 'increasing',                 # روند حجم
+    'pattern': 'spike',                    # الگوی حجمی
+    'is_confirmed_by_volume': True,        # آیا سیگنال توسط حجم تأیید می‌شود؟
+    'volume_ma_trend': 'increasing',       # روند میانگین حجم
+    'volume_ma_slope': 0.08                # شیب میانگین حجم (8% افزایش)
 }
 ```
 
-**امتیازدهی:**
-- حجم بالا + حرکت قیمت در جهت سیگنال → **×1.2 ضریب تقویت**
-- حجم پایین → **×0.9 ضریب کاهش**
-- این یک **Volume Confirmation Factor** است که در امتیاز نهایی ضرب می‌شود
+---
+
+##### 🎯 تأثیر حجم بر امتیاز نهایی
+
+**1. محاسبه ضریب تأیید حجمی در یک تایم‌فریم:**
+
+```python
+# signal_generator.py:5079
+volume_confirmation = 1.0 + (volume_confirmation_factor * 0.4)
+```
+
+**فرمول:**
+```
+Volume Confirmation Factor = 1.0 + (عامل تأیید حجمی × 0.4)
+```
+
+**مثال:**
+- اگر حجم سیگنال را تأیید کند: `volume_confirmation_factor = 1.0`
+  - `volume_confirmation = 1.0 + (1.0 × 0.4) = 1.4` → **+40% افزایش امتیاز**
+- اگر حجم سیگنال را تأیید نکند: `volume_confirmation_factor = 0.0`
+  - `volume_confirmation = 1.0 + (0.0 × 0.4) = 1.0` → **بدون تغییر امتیاز**
+
+**2. محاسبه ضریب تأیید حجمی چندتایم‌فریمی:**
+
+```python
+# signal_generator.py:5360-5367
+weighted_volume_factor = 0.0
+total_weight = 0.0
+
+for timeframe, is_confirmed in volume_confirmations.items():
+    tf_weight = timeframe_weights.get(timeframe, 1.0)
+    weighted_volume_factor += (1 if is_confirmed else 0) * tf_weight
+    total_weight += tf_weight
+
+volume_confirmation_factor = weighted_volume_factor / total_weight
+```
+
+**مثال محاسبه چندتایم‌فریمی:**
+
+فرض کنید وزن‌های تایم‌فریم:
+- `5m`: وزن = 1.0
+- `15m`: وزن = 1.5
+- `1h`: وزن = 2.0
+- `4h`: وزن = 2.5
+
+و تأیید حجم در هر تایم‌فریم:
+- `5m`: تأیید شده (1)
+- `15m`: تأیید شده (1)
+- `1h`: تأیید نشده (0)
+- `4h`: تأیید شده (1)
+
+```
+weighted_volume_factor = (1 × 1.0) + (1 × 1.5) + (0 × 2.0) + (1 × 2.5)
+                       = 1.0 + 1.5 + 0 + 2.5
+                       = 5.0
+
+total_weight = 1.0 + 1.5 + 2.0 + 2.5 = 7.0
+
+volume_confirmation_factor = 5.0 / 7.0 = 0.714 (≈71%)
+
+volume_confirmation = 1.0 + (0.714 × 0.4) = 1.286
+```
+
+**نتیجه:** در این مثال، 71% از تایم‌فریم‌ها (به صورت وزنی) سیگنال را تأیید کرده‌اند، که منجر به **+28.6% افزایش امتیاز** می‌شود.
+
+**3. اعمال ضریب حجم بر امتیاز نهایی:**
+
+```python
+final_score = base_score × volume_confirmation × (سایر ضرایب)
+```
+
+---
+
+##### 📝 مثال‌های کاربردی
+
+**مثال 1: سیگنال خرید با حجم بالا**
+
+```
+Current Volume: 2,500,000
+Volume SMA(20): 1,200,000
+Volume Ratio = 2,500,000 / 1,200,000 = 2.08
+
+طبقه‌بندی:
+- 2.08 > 1.95 (1.5 × 1.3) → trend = 'increasing', pattern = 'spike'
+- 2.08 > 1.3 → is_confirmed_by_volume = True
+
+تأثیر بر امتیاز:
+- volume_confirmation_factor = 1.0 (تأیید شده)
+- volume_confirmation = 1.0 + (1.0 × 0.4) = 1.4
+- امتیاز نهایی با 40% افزایش می‌یابد ✓
+```
+
+**مثال 2: سیگنال فروش با حجم پایین**
+
+```
+Current Volume: 600,000
+Volume SMA(20): 1,200,000
+Volume Ratio = 600,000 / 1,200,000 = 0.5
+
+طبقه‌بندی:
+- 0.5 < 0.51 → trend = 'strongly_decreasing', pattern = 'dry_up'
+- 0.5 < 1.3 → is_confirmed_by_volume = False
+
+تأثیر بر امتیاز:
+- volume_confirmation_factor = 0.0 (تأیید نشده)
+- volume_confirmation = 1.0 + (0.0 × 0.4) = 1.0
+- امتیاز نهایی تغییر نمی‌کند ⚠️
+```
+
+**مثال 3: حجم اوج (Climax Volume)**
+
+```
+Current Volume: 5,000,000
+Volume SMA(20): 1,500,000
+Volume Ratio = 5,000,000 / 1,500,000 = 3.33
+
+طبقه‌بندی:
+- 3.33 > 2.6 (2.0 × 1.3) → trend = 'strongly_increasing', pattern = 'climax_volume'
+- این می‌تواند نشانه اوج حرکت و احتمال برگشت باشد
+
+هشدار:
+- حجم بسیار بالا ممکن است نشان‌دهنده exhaustion (خستگی بازار) باشد
+- باید با سایر اندیکاتورها (RSI بالا، واگرایی) بررسی شود
+```
+
+---
+
+##### ⚙️ پارامترهای قابل تنظیم
+
+**در فایل تنظیمات (`signal_config`):**
+
+```python
+{
+    'volume_multiplier_threshold': 1.3,  # آستانه اصلی برای تأیید حجمی
+    # مقادیر پیشنهادی: 1.2 تا 1.5
+
+    # مثال: اگر به 1.5 تغییر دهید:
+    # - above_average: ratio > 1.5
+    # - spike: ratio > 2.25
+    # - climax: ratio > 3.0
+}
+```
+
+**تأثیر تغییر آستانه:**
+- **کاهش آستانه (مثلاً 1.2):** سیگنال‌های بیشتری تأیید می‌شوند (حساسیت بالاتر)
+- **افزایش آستانه (مثلاً 1.5):** فقط سیگنال‌های با حجم واقعاً بالا تأیید می‌شوند (دقت بالاتر)
+
+---
+
+##### 🎯 نکات کلیدی
+
+1. **حجم بالا = تأیید قوی‌تر:**
+   - حجم بالا نشان می‌دهد اعتماد و مشارکت بیشتر معامله‌گران در جهت حرکت
+   - سیگنال‌های با حجم بالا معمولاً قابل اعتمادتر هستند
+
+2. **الگوی Climax Volume:**
+   - حجم بسیار بالا (ratio > 2.6) می‌تواند نشانه خستگی بازار باشد
+   - ممکن است به برگشت قیمت منجر شود
+   - باید با احتیاط بررسی شود
+
+3. **الگوی Dry-Up:**
+   - حجم بسیار پایین (ratio < 0.51) نشان‌دهنده عدم علاقه بازار است
+   - سیگنال‌های با حجم بسیار پایین معمولاً ضعیف هستند
+
+4. **تحلیل چندتایم‌فریمی:**
+   - تأیید حجمی در تایم‌فریم‌های بالاتر وزن بیشتری دارد
+   - اگر حجم در 4h تأیید کند، تأثیر بیشتری بر امتیاز نهایی دارد
+
+5. **ترکیب با سایر عوامل:**
+   - حجم تنها یکی از عوامل است
+   - باید با روند، اندیکاتورهای مومنتوم، و رژیم بازار ترکیب شود
 
 ---
 
