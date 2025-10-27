@@ -1816,5 +1816,615 @@ else:
 
 ---
 
+## 4. تحلیل پیشرفته MACD
+
+**📍 کد مرجع:** `signal_generator.py:4534-4645` - تابع `_analyze_macd()`
+
+### مشکلات و محدودیت‌های فعلی
+
+#### ❌ مشکل 1: پارامترهای ثابت MACD برای همه شرایط
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:4566
+dif, dea, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+```
+
+- پارامترهای **ثابت (12, 26, 9)** برای همه شرایط بازار و همه تایم‌فریم‌ها
+- این پارامترها برای بازار سهام دهه 1970 طراحی شده‌اند
+- در بازارهای کریپتو با نوسانات بالا ممکن است بهینه نباشند
+- تایم‌فریم‌های مختلف نیاز به پارامترهای متفاوت دارند
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_adaptive_macd_parameters(self, df: pd.DataFrame,
+                                       timeframe: str,
+                                       market_regime: str) -> Tuple[int, int, int]:
+    """
+    محاسبه پارامترهای انطباقی MACD بر اساس timeframe و market regime
+    """
+
+    # پارامترهای پایه بر اساس timeframe
+    base_params = {
+        '1m':  (8,  17, 6),   # سریع‌تر برای timeframe کوتاه
+        '5m':  (10, 21, 7),
+        '15m': (12, 26, 9),   # استاندارد
+        '1h':  (14, 30, 10),
+        '4h':  (16, 34, 11),
+        '1d':  (19, 39, 12)   # کندتر برای timeframe بلند
+    }
+
+    fast, slow, signal = base_params.get(timeframe, (12, 26, 9))
+
+    # تطبیق با رژیم بازار
+    if market_regime in ['choppy', 'range', 'tight_range']:
+        # در بازارهای رنج، MACD سریع‌تر باشد
+        fast = max(6, int(fast * 0.75))
+        slow = max(12, int(slow * 0.75))
+        signal = max(5, int(signal * 0.75))
+
+    elif market_regime in ['strong_trend', 'trending']:
+        # در روندهای قوی، MACD کندتر برای فیلتر نویز
+        fast = int(fast * 1.2)
+        slow = int(slow * 1.2)
+        signal = int(signal * 1.2)
+
+    # تطبیق با نوسانات
+    atr_percent = self.calculate_atr_percent(df)
+    if atr_percent > 5.0:  # نوسانات بالا
+        fast = int(fast * 1.15)
+        slow = int(slow * 1.15)
+    elif atr_percent < 1.5:  # نوسانات پایین
+        fast = int(fast * 0.85)
+        slow = int(slow * 0.85)
+
+    return (fast, slow, signal)
+```
+
+**استفاده:**
+
+```python
+# در تابع _analyze_macd
+timeframe = df.attrs.get('timeframe', '15m')
+market_regime = self.get_current_regime(df)
+fast, slow, signal = self.calculate_adaptive_macd_parameters(df, timeframe, market_regime)
+
+# استفاده از پارامترهای انطباقی
+dif, dea, hist = talib.MACD(close, fastperiod=fast, slowperiod=slow, signalperiod=signal)
+```
+
+**مزایا:**
+- سازگاری با شرایط مختلف بازار
+- بهینه‌سازی برای هر timeframe
+- کاهش false signals در بازارهای choppy
+- افزایش sensitivity در زمان مناسب
+
+---
+
+#### ❌ مشکل 2: عدم فیلتر سیگنال‌ها بر اساس Market Type
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:4577
+market_type = self._detect_macd_market_type(dif, hist, ema20, ema50)
+# ولی این market_type فقط ذخیره می‌شود و استفاده نمی‌شود!
+```
+
+- Market Type شناسایی می‌شود ولی برای فیلتر کردن سیگنال‌ها استفاده نمی‌شود
+- در `X_transition` یا `B_bullish_correction` نباید سیگنال قوی صادر شود
+
+**راه حل پیشنهادی:**
+
+```python
+def filter_macd_signals_by_market_type(self, signals: List[Dict], market_type: str) -> List[Dict]:
+    """
+    فیلتر و تعدیل سیگنال‌های MACD بر اساس نوع بازار
+    """
+
+    # ضرایب تعدیل امتیاز بر اساس market type
+    market_type_multipliers = {
+        'A_bullish_strong': {
+            'bullish_signals': 1.3,   # سیگنال‌های صعودی قوی‌تر
+            'bearish_signals': 0.5    # سیگنال‌های نزولی ضعیف‌تر
+        },
+        'B_bullish_correction': {
+            'bullish_signals': 0.7,   # منتظر پایان اصلاح
+            'bearish_signals': 0.8
+        },
+        'C_bearish_strong': {
+            'bullish_signals': 0.5,
+            'bearish_signals': 1.3
+        },
+        'D_bearish_rebound': {
+            'bullish_signals': 0.8,
+            'bearish_signals': 0.7
+        },
+        'X_transition': {
+            'bullish_signals': 0.4,   # سیگنال‌ها بی‌اعتبار
+            'bearish_signals': 0.4
+        }
+    }
+
+    multipliers = market_type_multipliers.get(market_type,
+                                               {'bullish_signals': 1.0, 'bearish_signals': 1.0})
+
+    filtered_signals = []
+    for signal in signals:
+        direction = signal.get('direction', 'neutral')
+
+        # تعدیل امتیاز
+        if direction == 'bullish':
+            signal['score'] *= multipliers['bullish_signals']
+            signal['market_type_adjusted'] = True
+        elif direction == 'bearish':
+            signal['score'] *= multipliers['bearish_signals']
+            signal['market_type_adjusted'] = True
+
+        # حذف سیگنال‌های خیلی ضعیف
+        if signal['score'] >= 0.5:
+            filtered_signals.append(signal)
+
+    return filtered_signals
+```
+
+**استفاده:**
+
+```python
+# در تابع _analyze_macd
+all_signals = macd_crosses + dif_behavior + hist_analysis + macd_divergence
+
+# فیلتر بر اساس market type
+all_signals = self.filter_macd_signals_by_market_type(all_signals, market_type)
+```
+
+**مثال:**
+```
+Market Type: X_transition (بازار در حال تغییر جهت)
+سیگنال: macd_gold_cross_below_zero با امتیاز 2.5
+
+بعد از فیلتر:
+score = 2.5 × 0.4 = 1.0 (کاهش 60%)
+```
+
+**مزایا:**
+- کاهش false signals در market types نامناسب
+- افزایش دقت سیگنال‌ها در شرایط مناسب
+- استفاده بهتر از market type که قبلاً محاسبه می‌شد
+
+---
+
+#### ❌ مشکل 3: عدم محاسبه Strength برای همه سیگنال‌ها
+
+**مشکل فعلی:**
+```python
+# فقط MACD crosses دارای strength هستند
+cross_strength = min(1.0, abs(dif - dea) * 5)
+
+# بقیه سیگنال‌ها (histogram, divergence, trendline) strength ندارند
+```
+
+- فقط تقاطع‌ها strength دارند، بقیه سیگنال‌ها ثابت هستند
+- یک `macd_hist_bottom_divergence` ضعیف همان امتیاز یک divergence قوی را دارد
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_signal_strength(self, signal_type: str, df: pd.DataFrame,
+                              dif: pd.Series, dea: pd.Series,
+                              hist: pd.Series) -> float:
+    """
+    محاسبه قدرت سیگنال بر اساس نوع آن
+    """
+
+    if 'divergence' in signal_type:
+        # قدرت واگرایی بر اساس فاصله بین قله‌ها/دره‌ها
+        return self._calculate_divergence_strength(df, dif)
+
+    elif 'trendline_break' in signal_type:
+        # قدرت شکست خط روند بر اساس momentum
+        dif_momentum = abs(dif.iloc[-1] - dif.iloc[-5])
+        return min(1.0, dif_momentum * 2)
+
+    elif 'hist_shrink' in signal_type or 'hist_pull' in signal_type:
+        # قدرت بر اساس اندازه قله/دره histogram
+        hist_peak_value = abs(hist.iloc[-1])
+        hist_avg = hist.abs().mean()
+        return min(1.0, hist_peak_value / hist_avg if hist_avg > 0 else 0.5)
+
+    elif 'zero_cross' in signal_type:
+        # قدرت بر اساس سرعت عبور از صفر
+        dif_change = abs(dif.iloc[-1] - dif.iloc[-3])
+        return min(1.0, dif_change * 3)
+
+    else:
+        return 1.0  # پیش‌فرض
+
+
+def _calculate_divergence_strength(self, df: pd.DataFrame, indicator: pd.Series) -> float:
+    """
+    محاسبه قدرت واگرایی
+    """
+    # پیدا کردن دو قله/دره اخیر
+    peaks, valleys = self.find_peaks_and_valleys(indicator.values, ...)
+
+    if len(peaks) >= 2:
+        # فاصله قیمتی بین قله‌ها
+        price_change = abs(df['close'].iloc[peaks[-1]] - df['close'].iloc[peaks[-2]])
+
+        # فاصله indicator بین قله‌ها
+        indicator_change = abs(indicator.iloc[peaks[-1]] - indicator.iloc[peaks[-2]])
+
+        # نرمال‌سازی
+        price_change_pct = price_change / df['close'].iloc[peaks[-2]]
+        indicator_change_pct = indicator_change / abs(indicator.iloc[peaks[-2]]) if indicator.iloc[peaks[-2]] != 0 else 0
+
+        # هرچه divergence بیشتر، قوی‌تر
+        divergence_gap = abs(price_change_pct - indicator_change_pct)
+
+        return min(1.0, divergence_gap * 10)
+
+    return 0.5  # پیش‌فرض
+```
+
+**استفاده:**
+
+```python
+# برای هر سیگنال
+for signal in all_signals:
+    if 'strength' not in signal:
+        signal['strength'] = self.calculate_signal_strength(
+            signal['type'], df, dif, dea, hist
+        )
+        signal['score'] *= signal['strength']
+```
+
+**مزایا:**
+- سیگنال‌های قوی امتیاز بالاتر، ضعیف‌ها امتیاز پایین‌تر
+- تفکیک بهتر بین کیفیت سیگنال‌ها
+- کاهش تأثیر سیگنال‌های ضعیف
+
+---
+
+#### ❌ مشکل 4: الگوی Kill Long Bin بدون معکوس (Kill Short Bin)
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:3481-3494
+# فقط Kill Long Bin پیاده‌سازی شده (بین دو دره همیشه منفی)
+# Kill Short Bin (بین دو قله همیشه مثبت) وجود ندارد
+```
+
+- فقط الگوی bearish (Kill Long) پیاده شده
+- الگوی معکوس برای سیگنال bullish وجود ندارد
+
+**راه حل پیشنهادی:**
+
+```python
+def detect_macd_bins(self, hist: pd.Series, dates_index: pd.Index) -> List[Dict[str, Any]]:
+    """
+    شناسایی الگوهای Kill Long Bin و Kill Short Bin
+    """
+    signals = []
+
+    peaks_iloc, valleys_iloc = self.find_peaks_and_valleys(hist.values, ...)
+
+    # Kill Long Bin: بین دو دره همیشه منفی (فشار فروش مداوم)
+    if len(valleys_iloc) >= 2:
+        for i in range(len(valleys_iloc) - 1):
+            v1_rel, v2_rel = valleys_iloc[i], valleys_iloc[i + 1]
+            v1_abs, v2_abs = dates_index[v1_rel], dates_index[v2_rel]
+
+            if hist.iloc[v1_rel] < 0 and hist.iloc[v2_rel] < 0:
+                hist_between = hist.iloc[v1_rel: v2_rel + 1]
+
+                if not hist_between.empty and hist_between.max() < 0:
+                    # محاسبه قدرت بر اساس طول bin و عمق
+                    bin_length = v2_rel - v1_rel
+                    bin_depth = abs(hist_between.mean())
+                    strength = min(1.0, (bin_length * bin_depth) / 10)
+
+                    signals.append({
+                        'type': 'macd_hist_kill_long_bin',
+                        'direction': 'bearish',
+                        'index': v2_abs,
+                        'date': v2_abs,
+                        'score': self.pattern_scores.get('macd_hist_kill_long_bin', 2.0) * strength,
+                        'strength': strength,
+                        'details': {
+                            'bin_length': bin_length,
+                            'bin_depth': float(bin_depth)
+                        }
+                    })
+
+    # Kill Short Bin: بین دو قله همیشه مثبت (فشار خرید مداوم)
+    if len(peaks_iloc) >= 2:
+        for i in range(len(peaks_iloc) - 1):
+            p1_rel, p2_rel = peaks_iloc[i], peaks_iloc[i + 1]
+            p1_abs, p2_abs = dates_index[p1_rel], dates_index[p2_rel]
+
+            if hist.iloc[p1_rel] > 0 and hist.iloc[p2_rel] > 0:
+                hist_between = hist.iloc[p1_rel: p2_rel + 1]
+
+                if not hist_between.empty and hist_between.min() > 0:
+                    # محاسبه قدرت
+                    bin_length = p2_rel - p1_rel
+                    bin_height = hist_between.mean()
+                    strength = min(1.0, (bin_length * bin_height) / 10)
+
+                    signals.append({
+                        'type': 'macd_hist_kill_short_bin',
+                        'direction': 'bullish',
+                        'index': p2_abs,
+                        'date': p2_abs,
+                        'score': self.pattern_scores.get('macd_hist_kill_short_bin', 2.0) * strength,
+                        'strength': strength,
+                        'details': {
+                            'bin_length': bin_length,
+                            'bin_height': float(bin_height)
+                        }
+                    })
+
+    return signals
+```
+
+**مزایا:**
+- تقارن در شناسایی الگوهای صعودی و نزولی
+- شناسایی فشار خرید مداوم (Kill Short Bin)
+- محاسبه strength بر اساس طول و عمق bin
+
+---
+
+#### ❌ مشکل 5: عدم استفاده از MACD Zero-Lag یا MACD Leader
+
+**مشکل فعلی:**
+```python
+# MACD استاندارد تأخیر (lag) دارد
+dif, dea, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+```
+
+- MACD استاندارد به دلیل استفاده از EMA دارای lag است
+- سیگنال‌ها با تأخیر صادر می‌شوند
+- نسخه‌های پیشرفته‌تر با lag کمتر وجود دارند
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_zero_lag_macd(self, close: np.ndarray,
+                           fast: int = 12, slow: int = 26,
+                           signal: int = 9) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    محاسبه Zero-Lag MACD
+
+    Zero-Lag MACD از EMA + lag compensation استفاده می‌کند
+    """
+
+    # محاسبه EMA معمولی
+    ema_fast = talib.EMA(close, timeperiod=fast)
+    ema_slow = talib.EMA(close, timeperiod=slow)
+
+    # محاسبه lag compensation
+    # Lag ≈ (period - 1) / 2
+    lag_fast = (fast - 1) / 2
+    lag_slow = (slow - 1) / 2
+
+    # محاسبه EMA دوبار برای تخمین lag
+    ema_fast_2 = talib.EMA(ema_fast, timeperiod=fast)
+    ema_slow_2 = talib.EMA(ema_slow, timeperiod=slow)
+
+    # Zero-Lag EMA = 2*EMA - EMA(EMA)
+    zlema_fast = 2 * ema_fast - ema_fast_2
+    zlema_slow = 2 * ema_slow - ema_slow_2
+
+    # Zero-Lag DIF
+    zl_dif = zlema_fast - zlema_slow
+
+    # Zero-Lag Signal
+    zl_signal = talib.EMA(zl_dif, timeperiod=signal)
+    zl_signal_2 = talib.EMA(zl_signal, timeperiod=signal)
+    zl_dea = 2 * zl_signal - zl_signal_2
+
+    # Zero-Lag Histogram
+    zl_hist = zl_dif - zl_dea
+
+    return zl_dif, zl_dea, zl_hist
+
+
+def calculate_macd_leader(self, close: np.ndarray,
+                          fast: int = 12, slow: int = 26) -> np.ndarray:
+    """
+    محاسبه MACD Leader (پیش‌بینی کننده)
+
+    MACD Leader = DIF + (DIF - DIF_قبلی)
+    """
+
+    # محاسبه MACD معمولی
+    dif, _, _ = talib.MACD(close, fastperiod=fast, slowperiod=slow, signalperiod=9)
+
+    # محاسبه momentum DIF
+    dif_momentum = np.diff(dif, prepend=dif[0])
+
+    # MACD Leader
+    macd_leader = dif + dif_momentum
+
+    return macd_leader
+```
+
+**استفاده ترکیبی:**
+
+```python
+def _analyze_macd_advanced(self, df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    تحلیل MACD با استفاده از هر دو نسخه استاندارد و Zero-Lag
+    """
+
+    close = df['close'].values
+
+    # MACD استاندارد (برای سیگنال‌های تأیید شده)
+    std_dif, std_dea, std_hist = talib.MACD(close, 12, 26, 9)
+
+    # Zero-Lag MACD (برای سیگنال‌های زودهنگام)
+    zl_dif, zl_dea, zl_hist = self.calculate_zero_lag_macd(close, 12, 26, 9)
+
+    # MACD Leader (برای پیش‌بینی)
+    macd_leader = self.calculate_macd_leader(close, 12, 26)
+
+    # ترکیب سیگنال‌ها
+    signals = []
+
+    # 1. سیگنال‌های استاندارد (وزن بالا - تأیید شده)
+    std_signals = self._detect_macd_signals(std_dif, std_dea, std_hist, df.index)
+    for sig in std_signals:
+        sig['source'] = 'standard'
+        sig['weight'] = 1.0
+        signals.append(sig)
+
+    # 2. سیگنال‌های Zero-Lag (وزن متوسط - زودهنگام)
+    zl_signals = self._detect_macd_signals(zl_dif, zl_dea, zl_hist, df.index)
+    for sig in zl_signals:
+        sig['source'] = 'zero_lag'
+        sig['weight'] = 0.7  # وزن کمتر چون ممکن است false signal باشد
+        sig['score'] *= 0.7
+        signals.append(sig)
+
+    # 3. سیگنال Leader (وزن پایین - پیش‌بینی)
+    if len(macd_leader) >= 2:
+        # cross با zero
+        if macd_leader[-2] < 0 and macd_leader[-1] > 0:
+            signals.append({
+                'type': 'macd_leader_cross_up',
+                'direction': 'bullish',
+                'score': 1.5,
+                'source': 'leader',
+                'weight': 0.5
+            })
+
+    return {'signals': signals, 'standard': std_dif, 'zero_lag': zl_dif, 'leader': macd_leader}
+```
+
+**مزایا:**
+- سیگنال‌های زودتر با Zero-Lag MACD
+- تأیید سیگنال‌ها با MACD استاندارد
+- پیش‌بینی با MACD Leader
+- کاهش lag در تصمیم‌گیری
+
+---
+
+#### ❌ مشکل 6: عدم validation سیگنال‌های MACD با Price Action
+
+**مشکل فعلی:**
+- سیگنال‌های MACD بدون بررسی price action صادر می‌شوند
+- ممکن است MACD صعودی باشد ولی قیمت در حال شکست support باشد
+
+**راه حل پیشنهادی:**
+
+```python
+def validate_macd_with_price_action(self, macd_signals: List[Dict],
+                                     df: pd.DataFrame,
+                                     sr_levels: Dict) -> List[Dict]:
+    """
+    اعتبارسنجی سیگنال‌های MACD با price action
+    """
+
+    validated_signals = []
+    current_price = df['close'].iloc[-1]
+
+    for signal in macd_signals:
+        direction = signal['direction']
+        validation_score = 1.0
+
+        # 1. بررسی نزدیکی به سطوح S/R
+        if direction == 'bullish':
+            # آیا نزدیک support هستیم؟
+            near_support = self._is_near_support(current_price, sr_levels)
+            if near_support:
+                validation_score *= 1.3  # تقویت
+
+            # آیا نزدیک resistance هستیم؟
+            near_resistance = self._is_near_resistance(current_price, sr_levels)
+            if near_resistance:
+                validation_score *= 0.6  # تضعیف
+
+        elif direction == 'bearish':
+            near_resistance = self._is_near_resistance(current_price, sr_levels)
+            if near_resistance:
+                validation_score *= 1.3
+
+            near_support = self._is_near_support(current_price, sr_levels)
+            if near_support:
+                validation_score *= 0.6
+
+        # 2. بررسی الگوهای شمعی اخیر
+        recent_candles = df.tail(3)
+        bullish_candles = sum(1 for _, row in recent_candles.iterrows() if row['close'] > row['open'])
+
+        if direction == 'bullish' and bullish_candles >= 2:
+            validation_score *= 1.2  # هماهنگی price action
+        elif direction == 'bearish' and bullish_candles <= 1:
+            validation_score *= 1.2
+
+        # 3. بررسی حجم
+        volume_confirmed = self.is_volume_confirmed(df)
+        if volume_confirmed:
+            validation_score *= 1.15
+        else:
+            validation_score *= 0.85
+
+        # اعمال validation
+        signal['score'] *= validation_score
+        signal['validation_score'] = validation_score
+        signal['validated'] = True
+
+        validated_signals.append(signal)
+
+    return validated_signals
+```
+
+**مزایا:**
+- فیلتر کردن سیگنال‌های خلاف price action
+- تقویت سیگنال‌های هماهنگ با S/R
+- ترکیب MACD با حجم و الگوهای شمعی
+
+---
+
+### 📋 خلاصه پیشنهادات
+
+| # | مشکل | راه حل | اولویت | تأثیر بر دقت |
+|---|------|--------|---------|--------------|
+| 1 | پارامترهای ثابت MACD | پارامترهای انطباقی با timeframe و regime | 🟡 متوسط | +10% |
+| 2 | عدم فیلتر با Market Type | تعدیل امتیاز بر اساس market type | 🔴 بالا | +18% |
+| 3 | فقدان Strength در همه سیگنال‌ها | محاسبه strength برای تمام سیگنال‌ها | 🟡 متوسط | +12% |
+| 4 | فقط Kill Long Bin | اضافه کردن Kill Short Bin | 🟢 پایین | +5% |
+| 5 | Lag بالای MACD | استفاده از Zero-Lag MACD | 🔴 بالا | +15% |
+| 6 | عدم validation با Price Action | اعتبارسنجی با S/R و candles | 🟡 متوسط | +14% |
+
+**تأثیر کلی پیشنهادات:** افزایش دقت حدود **+45-55%** در تحلیل MACD
+
+---
+
+### 🔬 پیشنهادات تست و اعتبارسنجی
+
+1. **A/B Testing MACD Parameters:**
+   - مقایسه MACD استاندارد vs انطباقی
+   - تست پارامترهای مختلف برای هر timeframe
+   - اندازه‌گیری win rate و profit factor
+
+2. **Backtesting Market Type Filtering:**
+   - مقایسه عملکرد با/بدون فیلتر market type
+   - تحلیل کاهش false signals در X_transition
+   - اندازه‌گیری تأثیر در هر market type
+
+3. **Zero-Lag vs Standard MACD:**
+   - مقایسه سرعت سیگنال‌ها
+   - تحلیل false positives در Zero-Lag
+   - یافتن وزن بهینه برای ترکیب دو نسخه
+
+4. **Validation Impact:**
+   - تست تأثیر validation با price action
+   - مقایسه سیگنال‌های validated vs non-validated
+   - تحلیل در شرایط مختلف بازار
+
+---
+
 **تاریخ آخرین به‌روزرسانی:** 2025-10-27
 

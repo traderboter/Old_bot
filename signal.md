@@ -1575,36 +1575,402 @@ Volume Ratio = 5,000,000 / 1,500,000 = 3.33
 ---
 
 #### مرحله 4: تحلیل پیشرفته MACD
+
+**📍 کد مرجع:** `signal_generator.py:4534-4645` - تابع `_analyze_macd()`
+
 ```python
 analysis_data['macd'] = self._analyze_macd(df)
 ```
 
-**تحلیل‌های MACD:**
+این بخش یک **تحلیل چندلایه و پیشرفته از MACD** انجام می‌دهد که فراتر از تحلیل ساده crossover است. این تابع 5 نوع تحلیل مختلف را ترکیب می‌کند تا سیگنال‌های دقیق‌تر تولید کند.
 
-1. **MACD Line و Signal Line**
-   - تقاطع MACD با Signal Line
-   - جهت MACD Histogram
+**⚠️ تفاوت با مرحله 2:**
+- **مرحله 2 (Momentum Indicators):** تحلیل ساده MACD (crossover و zero-cross)
+- **مرحله 4 (تحلیل پیشرفته):** تحلیل عمیق شامل market type، histogram patterns، trendline breaks، و divergence
 
-2. **شناسایی واگرایی (Divergence)**
-   - واگرایی معمولی (Regular Divergence)
-   - واگرایی مخفی (Hidden Divergence)
+---
 
-**خروجی:**
+##### 📊 اجزای تحلیل پیشرفته MACD
+
+تابع `_analyze_macd` پنج تحلیل مستقل انجام می‌دهد:
+
+```python
+# signal_generator.py:4576-4593
+market_type = self._detect_macd_market_type(dif, hist, ema20, ema50)           # 1
+macd_crosses = self._detect_detailed_macd_crosses(dif, dea, df.index)          # 2
+dif_behavior = self._detect_dif_behavior(dif, df.index)                        # 3
+hist_analysis = self._analyze_macd_histogram(hist, close, df.index)            # 4
+macd_divergence = self._detect_divergence_generic(close, dif, 'macd')          # 5
+```
+
+---
+
+##### 1️⃣ تشخیص نوع بازار (Market Type Detection)
+
+**📍 کد:** `signal_generator.py:3125-3150` - تابع `_detect_macd_market_type()`
+
+این تحلیل **نوع بازار** را با ترکیب MACD، Histogram و EMA تشخیص می‌دهد:
+
+**فرمول تصمیم‌گیری:**
+
+| Market Type | شرایط | معنی | استراتژی |
+|------------|-------|------|----------|
+| `A_bullish_strong` | DIF > 0 **و** HIST > 0 **و** EMA20 > EMA50 | روند صعودی قوی | ✅ خرید قوی |
+| `B_bullish_correction` | DIF > 0 **و** HIST < 0 **و** EMA20 > EMA50 | اصلاح در روند صعودی | ⚠️ منتظر بمانید |
+| `C_bearish_strong` | DIF < 0 **و** HIST < 0 **و** EMA20 < EMA50 | روند نزولی قوی | ✅ فروش قوی |
+| `D_bearish_rebound` | DIF < 0 **و** HIST > 0 **و** EMA20 < EMA50 | بازگشت موقت در روند نزولی | ⚠️ منتظر بمانید |
+| `X_transition` | سایر موارد | انتقالی / بدون روند واضح | ❌ معامله نکنید |
+
+**کد واقعی:**
+```python
+# signal_generator.py:3136-3145
+if curr_dif > 0 and curr_hist > 0 and curr_ema20 > curr_ema50:
+    return "A_bullish_strong"
+elif curr_dif > 0 and curr_hist < 0 and curr_ema20 > curr_ema50:
+    return "B_bullish_correction"
+elif curr_dif < 0 and curr_hist < 0 and curr_ema20 < curr_ema50:
+    return "C_bearish_strong"
+elif curr_dif < 0 and curr_hist > 0 and curr_ema20 < curr_ema50:
+    return "D_bearish_rebound"
+else:
+    return "X_transition"
+```
+
+**مثال:**
+```
+DIF = 150, HIST = 20, EMA20 = 50100, EMA50 = 49800
+→ DIF > 0 ✓, HIST > 0 ✓, EMA20 > EMA50 ✓
+→ Market Type = "A_bullish_strong"
+→ استراتژی: جستجوی فرصت‌های خرید
+```
+
+---
+
+##### 2️⃣ تقاطع‌های تفصیلی MACD (Detailed Crosses)
+
+**📍 کد:** `signal_generator.py:3152-3246` - تابع `_detect_detailed_macd_crosses()`
+
+این تحلیل **تقاطع DIF و DEA** را با جزئیات بیشتری بررسی می‌کند:
+
+**سیگنال‌های صعودی (Golden Cross):**
+
+| سیگنال | شرط | امتیاز پایه | معنی |
+|--------|-----|-----------|------|
+| `macd_gold_cross_below_zero` | DIF > DEA شد **و** DIF < 0 | **2.5** | تقاطع صعودی در ناحیه منفی (قوی‌تر) |
+| `macd_gold_cross_above_zero` | DIF > DEA شد **و** DIF > 0 | **2.5** | تقاطع صعودی در ناحیه مثبت (ضعیف‌تر) |
+
+**سیگنال‌های نزولی (Death Cross):**
+
+| سیگنال | شرط | امتیاز پایه | معنی |
+|--------|-----|-----------|------|
+| `macd_death_cross_above_zero` | DIF < DEA شد **و** DIF > 0 | **2.5** | تقاطع نزولی در ناحیه مثبت (قوی‌تر) |
+| `macd_death_cross_below_zero` | DIF < DEA شد **و** DIF < 0 | **2.5** | تقاطع نزولی در ناحیه منفی (ضعیف‌تر) |
+
+**محاسبه قدرت تقاطع:**
+
+```python
+# signal_generator.py:3186-3187
+cross_strength = min(1.0, abs(dif - dea) * 5)
+signal_score = base_score * cross_strength
+```
+
+**فرمول:**
+```
+Cross Strength = min(1.0, |DIF - DEA| × 5)
+Final Score = Base Score × Cross Strength
+```
+
+**مثال:**
+```
+DIF قبلی = -50, DEA قبلی = -40 → DIF < DEA
+DIF فعلی = -35, DEA فعلی = -38 → DIF > DEA ✅ تقاطع صعودی!
+
+محل تقاطع: DIF = -35 < 0 → macd_gold_cross_below_zero
+Cross Strength = min(1.0, |-35 - (-38)| × 5) = min(1.0, 3 × 5) = min(1.0, 15) = 1.0
+Final Score = 2.5 × 1.0 = 2.5
+```
+
+**نکته مهم:** تقاطع **زیر صفر** قوی‌تر از **بالای صفر** است چون نشان می‌دهد بازار از ناحیه ضعیف شروع به بهبود کرده.
+
+---
+
+##### 3️⃣ رفتار خط DIF (DIF Line Behavior)
+
+**📍 کد:** `signal_generator.py:3281-3410` - تابع `_detect_dif_behavior()`
+
+این تحلیل دو نوع رفتار خط DIF را بررسی می‌کند:
+
+**الف) عبور از خط صفر (Zero Line Crosses)**
+
+| سیگنال | شرط | امتیاز | معنی |
+|--------|-----|-------|------|
+| `dif_cross_zero_up_first` | اولین عبور صعودی DIF از صفر | **2.0** | شروع روند صعودی |
+| `dif_cross_zero_up_second` | دومین عبور صعودی DIF از صفر | **2.0** | تقویت روند صعودی |
+| `dif_cross_zero_down_first` | اولین عبور نزولی DIF از صفر | **2.0** | شروع روند نزولی |
+| `dif_cross_zero_down_second` | دومین عبور نزولی DIF از صفر | **2.0** | تقویت روند نزولی |
+
+**کد:**
+```python
+# signal_generator.py:3304-3316
+crossed_up = dif[i-1] < 0 and dif[i] > 0
+if crossed_up:
+    cross_up_count += 1
+    signal_type = f"dif_cross_zero_up_{'first' if cross_up_count == 1 else 'second'}"
+```
+
+**ب) شکست خطوط روند (Trendline Breaks)**
+
+این بخش **خط روند DIF** را محاسبه کرده و شکست آن را شناسایی می‌کند:
+
+| سیگنال | شرط | امتیاز | معنی |
+|--------|-----|-------|------|
+| `dif_trendline_break_up` | DIF از خط روند مقاومت عبور کرد | **3.0** | شکست صعودی - قوی |
+| `dif_trendline_break_down` | DIF از خط روند حمایت عبور کرد | **3.0** | شکست نزولی - قوی |
+
+**فرآیند:**
+1. پیدا کردن قله‌ها و دره‌های DIF با median filter
+2. رسم خط روند بین دو قله/دره اخیر
+3. بررسی شکست خط روند توسط DIF فعلی
+
+**کد:**
+```python
+# signal_generator.py:3328-3336
+smooth_dif_vals = scipy.signal.medfilt(dif_for_trend.values, kernel_size=5)
+peaks_iloc, valleys_iloc = self.find_peaks_and_valleys(smooth_dif_vals, ...)
+
+# رسم خط روند: y = k*x + b
+k = (p2_val - p1_val) / (p2_idx - p1_idx)
+b = p1_val - k * p1_idx
+
+# بررسی شکست
+if current_dif > trendline_val + margin:  # شکست صعودی
+    signal = 'dif_trendline_break_up'
+```
+
+---
+
+##### 4️⃣ تحلیل هیستوگرام MACD (Histogram Analysis)
+
+**📍 کد:** `signal_generator.py:3414-3509` - تابع `_analyze_macd_histogram()`
+
+هیستوگرام MACD (HIST = DIF - DEA) الگوهای مهمی را نشان می‌دهد:
+
+**الف) الگوهای تک‌نقطه‌ای:**
+
+| سیگنال | شرط | امتیاز | معنی |
+|--------|-----|-------|------|
+| `macd_hist_shrink_head` | HIST مثبت به قله رسید | **1.5** | کاهش قدرت صعود - احتمال برگشت |
+| `macd_hist_pull_feet` | HIST منفی به کف رسید | **1.5** | کاهش قدرت نزول - احتمال برگشت |
+
+**کد:**
+```python
+# signal_generator.py:3433-3442
+peaks_iloc, valleys_iloc = self.find_peaks_and_valleys(hist.values, ...)
+for idx in peaks_iloc:
+    if hist[idx] > 0:
+        signals.append({'type': 'macd_hist_shrink_head', 'score': 1.5})
+```
+
+**ب) واگرایی هیستوگرام (Histogram Divergence):**
+
+| سیگنال | شرط | امتیاز | معنی |
+|--------|-----|-------|------|
+| `macd_hist_top_divergence` | قیمت HH ولی HIST LH | **3.8** | واگرایی نزولی - قوی |
+| `macd_hist_bottom_divergence` | قیمت LL ولی HIST HL | **3.8** | واگرایی صعودی - قوی |
+
+**کد:**
+```python
+# signal_generator.py:3455-3466
+if len(peaks) >= 2:
+    p1, p2 = peaks[-2], peaks[-1]
+    # قیمت بالاتر رفته ولی HIST پایین‌تر → واگرایی نزولی
+    if hist[p2] < hist[p1] and close[p2] > close[p1]:
+        signals.append({'type': 'macd_hist_top_divergence', 'score': 3.8})
+```
+
+**ج) الگوی Kill Long Bin:**
+
+| سیگنال | شرط | امتیاز | معنی |
+|--------|-----|-------|------|
+| `macd_hist_kill_long_bin` | HIST بین دو دره همیشه منفی | **2.0** | فشار فروش مداوم |
+
+این الگو نشان می‌دهد که HIST بین دو دره به بالای صفر نرسیده → فشار فروش قوی.
+
+```python
+# signal_generator.py:3481-3494
+if len(valleys) >= 2:
+    v1, v2 = valleys[-2], valleys[-1]
+    hist_between = hist[v1:v2+1]
+    if hist_between.max() < 0:  # همیشه منفی بوده
+        signals.append({'type': 'macd_hist_kill_long_bin', 'score': 2.0})
+```
+
+---
+
+##### 5️⃣ واگرایی MACD (MACD Divergence)
+
+**📍 کد:** `signal_generator.py:4589-4590` - استفاده از `_detect_divergence_generic()`
+
+واگرایی بین **قیمت** و **خط DIF** را شناسایی می‌کند (این تابع قبلاً در بخش Momentum Indicators توضیح داده شد).
+
+**سیگنال‌های احتمالی:**
+- `macd_bullish_regular_divergence`
+- `macd_bearish_regular_divergence`
+- `macd_bullish_hidden_divergence`
+- `macd_bearish_hidden_divergence`
+
+---
+
+##### 📊 خروجی نهایی تابع _analyze_macd
+
 ```python
 {
-    'macd': 125.5,
-    'signal': 120.3,
-    'histogram': 5.2,
-    'cross': 'bullish',              # تقاطع صعودی
-    'divergence': 'bullish_regular', # واگرایی
-    'strength': 0.8                  # قدرت سیگنال
+    'status': 'ok',
+    'market_type': 'A_bullish_strong',
+    'direction': 'bullish',                # یا 'bearish' یا 'neutral'
+    'bullish_score': 8.3,                  # مجموع امتیازات صعودی
+    'bearish_score': 2.0,                  # مجموع امتیازات نزولی
+    'signals': [
+        {
+            'type': 'macd_gold_cross_below_zero',
+            'direction': 'bullish',
+            'score': 2.5,
+            'strength': 1.0,
+            'details': {'dif': -35, 'dea': -38, 'above_zero': False}
+        },
+        {
+            'type': 'macd_hist_bottom_divergence',
+            'direction': 'bullish',
+            'score': 3.8
+        },
+        {
+            'type': 'dif_trendline_break_up',
+            'direction': 'bullish',
+            'score': 3.0
+        }
+    ],
+    'details': {
+        'dif': -35.2,
+        'dea': -38.1,
+        'hist': 2.9,
+        'dif_slope': 5.3,          # شیب DIF (مثبت = صعودی)
+        'dea_slope': 3.2,          # شیب DEA
+        'hist_slope': 2.1,         # شیب Histogram
+        'market_type': 'A_bullish_strong'
+    }
 }
 ```
 
-**امتیازدهی:**
-- MACD Cross (تقاطع) → **+10 تا +20 امتیاز**
-- MACD Divergence (واگرایی) → **+20 تا +30 امتیاز**
-- MACD در این سیستم یکی از **قوی‌ترین اندیکاتورها** است
+---
+
+##### 🎯 محاسبه جهت نهایی
+
+```python
+# signal_generator.py:4596-4605
+bullish_score = sum(s['score'] for s in signals if s['direction'] == 'bullish')
+bearish_score = sum(s['score'] for s in signals if s['direction'] == 'bearish')
+
+if bullish_score > bearish_score * 1.1:
+    direction = 'bullish'
+elif bearish_score > bullish_score * 1.1:
+    direction = 'bearish'
+else:
+    direction = 'neutral'
+```
+
+**فرمول:**
+- اگر `bullish_score > bearish_score × 1.1` → جهت صعودی
+- اگر `bearish_score > bullish_score × 1.1` → جهت نزولی
+- در غیر این صورت → خنثی
+
+**مثال:**
+```
+bullish_score = 8.3 (cross: 2.5 + divergence: 3.8 + trendline: 3.0)
+bearish_score = 2.0
+
+8.3 > 2.0 × 1.1 = 2.2 ✓
+→ direction = 'bullish'
+```
+
+---
+
+##### 📝 مثال کامل تحلیل MACD
+
+**وضعیت بازار:**
+```
+DIF = -35, DEA = -38, HIST = 3
+DIF قبلی = -50, DEA قبلی = -40
+EMA20 = 50100, EMA50 = 49800
+قیمت فعلی = 50050
+```
+
+**تحلیل‌ها:**
+
+1. **Market Type:**
+   - DIF < 0, HIST > 0, EMA20 > EMA50 → `D_bearish_rebound` (بازگشت موقت)
+
+2. **MACD Cross:**
+   - DIF(-35) > DEA(-38) و قبلاً DIF(-50) < DEA(-40) بود
+   - تقاطع صعودی زیر صفر → `macd_gold_cross_below_zero`
+   - Cross strength = min(1.0, |-35-(-38)| × 5) = 1.0
+   - Score = 2.5 × 1.0 = **2.5**
+
+3. **DIF Behavior:**
+   - DIF از -50 به -35 رسیده (صعودی) ولی هنوز زیر صفر
+   - فرض: شکست خط روند → `dif_trendline_break_up`
+   - Score = **3.0**
+
+4. **Histogram:**
+   - HIST = 3 > 0 (مثبت شده)
+   - فرض: واگرایی کف → `macd_hist_bottom_divergence`
+   - Score = **3.8**
+
+5. **Divergence:**
+   - فرض: واگرایی صعودی معمولی شناسایی شد
+   - Score = **3.5**
+
+**نتیجه نهایی:**
+```
+bullish_score = 2.5 + 3.0 + 3.8 + 3.5 = 12.8
+bearish_score = 0
+
+direction = 'bullish' (قوی)
+```
+
+---
+
+##### 🎯 امتیازدهی در سیستم
+
+تمام سیگنال‌های MACD در لیست `signals` قرار می‌گیرند و در محاسبه امتیاز نهایی استفاده می‌شوند:
+
+```python
+for signal in macd_result['signals']:
+    if signal['direction'] == trade_direction:
+        total_score += signal['score']
+```
+
+**خلاصه امتیازات:**
+
+| سیگنال | امتیاز پایه | دسته‌بندی قدرت |
+|--------|-----------|----------------|
+| Golden/Death Cross | 2.5 | متوسط |
+| DIF Zero Cross | 2.0 | متوسط |
+| **DIF Trendline Break** | **3.0** | **قوی** |
+| Histogram Peaks/Valleys | 1.5 | ضعیف |
+| **Histogram Divergence** | **3.8** | **بسیار قوی** |
+| Kill Long Bin | 2.0 | متوسط |
+| **MACD Divergence** | **3.5** | **بسیار قوی** |
+
+---
+
+##### 🔑 نکات کلیدی
+
+1. **تحلیل چندلایه:** MACD از 5 جنبه مختلف تحلیل می‌شود
+2. **Market Type مهم است:** نوع بازار استراتژی معاملاتی را تعیین می‌کند
+3. **محل تقاطع:** تقاطع زیر صفر قوی‌تر از بالای صفر است
+4. **واگرایی = طلا:** واگرایی‌های MACD بالاترین امتیاز را دارند (3.8)
+5. **Histogram = تأیید کننده:** تغییرات هیستوگرام نشان‌دهنده تغییر قدرت روند است
+6. **Trendline Breaks:** شکست خطوط روند DIF سیگنال‌های قوی هستند (3.0)
 
 ---
 
