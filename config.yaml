@@ -1,0 +1,428 @@
+# ================= بخش تنظیمات Exchange Client =================
+# ================= بخش تنظیمات Exchange Client =================
+# ================= بخش تنظیمات Exchange Client =================
+# اطلاعات اتصال به API صرافی (مثال: KuCoin Futures)
+exchange:
+  api_key: 'YOUR_KUCOIN_FUTURES_API_KEY'     # کلید API شما
+  api_secret: 'YOUR_KUCOIN_FUTURES_API_SECRET' # کلید Secret شما
+  api_passphrase: 'YOUR_KUCOIN_FUTURES_API_PASSPHRASE' # رمز عبور API شما
+  api_version: '2'                             # نسخه API (معمولا '2' برای KuCoin)
+  base_url: 'https://api-futures.kucoin.com' # آدرس پایه API فیوچرز
+  websocket:                                  # تنظیمات ارتباط وب‌سوکت برای دریافت داده‌های زنده
+    enabled: True                            # فعال/غیرفعال کردن کلی WebSocket (برای دریافت آنی قیمت و ...)
+    ping_interval: 20                       # فاصله زمانی (ثانیه) برای بررسی فعال بودن اتصال WebSocket (اگر کلاینت خودش پینگ نفرسته)
+    auto_reconnect: True                     # تلاش مجدد خودکار در صورت قطع شدن WebSocket
+
+# ================= بخش دریافت داده‌ها =================
+# تنظیمات مربوط به نحوه دریافت و مدیریت داده‌های بازار
+data_fetching:
+  market_type: 'futures'                      # نوع بازار ('futures' یا 'spot') - فعلا فقط فیوچرز پیاده‌سازی شده
+  primary_api: 'kucoin'                      # نام API اصلی که ExchangeClient از آن استفاده می‌کند
+  max_symbols: 0                             # حداکثر تعداد نمادها برای پردازش (0 = بدون محدودیت)
+  auto_symbols: True                         # دریافت خودکار لیست نمادهای فعال از صرافی
+  fallback_apis: []                          # لیست APIهای پشتیبان (در حال حاضر استفاده نمی‌شود)
+  timeframes: [ '5m','15m','1h', '4h']      # تایم‌فریم‌های اصلی مورد نیاز ربات
+  max_concurrent_fetches: 10                 # حداکثر تعداد درخواست همزمان برای دریافت داده
+  rate_limits:                               # اطلاعات حد نرخ درخواست (بیشتر جنبه اطلاعاتی دارد)
+    requests_per_second: 5                   # حداکثر تعداد درخواست در هر ثانیه به API صرافی
+  delta_updates:                             # تنظیمات دریافت فقط کندل‌های جدید (به جای کل داده‌ها)
+    enabled: True                            # فعال کردن دریافت به‌روزرسانی‌های دلتا
+    smart_caching: True                      # استفاده از زمان انقضای کش هوشمند (تا کندل بعدی)
+  cache:                                     # تنظیمات کش کردن داده‌های OHLCV
+    use_redis: True                          # استفاده از کش Redis (دیتابیس در حافظه سریع)
+    use_memory_cache: True                   # استفاده از کش در حافظه RAM (سریع‌تر، ولی موقت)
+    expiry_seconds:                          # زمان انقضای کش (ثانیه) برای هر تایم‌فریم (اگر smart_caching غیرفعال باشد)
+      '5m': 300                              # کندل‌های 5 دقیقه‌ای به مدت 5 دقیقه کش می‌شوند
+      '15m': 900                             # کندل‌های 15 دقیقه‌ای به مدت 15 دقیقه کش می‌شوند
+      '1h': 3600                             # کندل‌های 1 ساعته به مدت 1 ساعت کش می‌شوند
+      '4h': 14400                            # کندل‌های 4 ساعته به مدت 4 ساعت کش می‌شوند
+    redis:                                   # تنظیمات اتصال به Redis
+      host: 'localhost'                      # آدرس سرور Redis
+      port: 6379                             # پورت سرور Redis
+      db: 0                                  # شماره دیتابیس Redis
+      path: null                             # مسیر سوکت Unix برای Redis (اختیاری، جایگزین host/port)
+      password: null                         # رمز عبور Redis (اگر وجود دارد)
+  use_mock_data: False                       # استفاده از داده‌های ساختگی برای تست (به جای داده‌های واقعی)
+
+# ================= بخش استراتژی Ensemble =================
+# تنظیمات مربوط به ترکیب چند استراتژی برای تولید سیگنال قوی‌تر
+ensemble_strategy:
+  enabled: True                             # فعال/غیرفعال کردن استراتژی ترکیبی
+  voting_threshold: 0.6                      # حداقل نسبت رای وزنی برای تایید یک جهت (مثلا 60%)
+  min_strategies_agreement: 2                # حداقل تعداد استراتژی‌هایی که باید روی یک جهت توافق کنند
+  trend_strategy_weight: 1.2                 # وزن استراتژی دنبال‌کننده روند در رای‌گیری
+  mean_reversion_strategy_weight: 1.0        # وزن استراتژی بازگشت به میانگین
+  breakout_strategy_weight: 1.1              # وزن استراتژی شکست
+
+# ================= بخش تولید سیگنال =================
+# تنظیمات مربوط به نحوه تحلیل داده‌ها و تولید سیگنال‌های معاملاتی
+signal_generation:
+  minimum_signal_score: 33                # حداقل امتیاز نهایی برای معتبر بودن یک سیگنال
+  strong_signal_score: 44                 # آستانه امتیاز برای سیگنال‌های "قوی" (برای کاربردهای آتی)
+  timeframes:  [ '5m','15m','1h', '4h']   # تایم‌فریم‌هایی که در تحلیل چندتایم‌فریمی استفاده می‌شوند
+  timeframe_weights:                      # ضریب اهمیت تحلیل هر تایم‌فریم در امتیاز نهایی
+    '5m': 0.7                            # وزن کمتر برای تایم‌فریم‌های کوتاه‌مدت
+    '15m': 0.85                          # وزن متوسط برای تایم‌فریم میان‌مدت
+    '1h': 1.0                            # وزن استاندارد برای تایم‌فریم یک ساعته
+    '4h': 1.2                            # وزن بیشتر برای تایم‌فریم‌های بلندمدت
+  volume_multiplier_threshold: 1.3           # نسبت حجم فعلی به میانگین متحرک حجم برای تایید با حجم
+  volume_confirmation_weight: 1.0            # ضریب اعمالی به امتیاز در صورت تایید با حجم
+  divergence_sensitivity: 0.75               # حساسیت تشخیص واگرایی (تنظیم دقت شناسایی واگرایی‌ها)
+  peak_detection_order: 3                    # پارامتر order برای تشخیص قله/دره (تعداد کندل همسایه)
+  peak_detection_distance: 5                 # حداقل فاصله (تعداد کندل) بین قله‌ها/دره‌ها
+  # وزن‌های پایه برای انواع تحلیل (قابل تغییر توسط رژیم بازار)
+  trend_following_weight: 1.0                # وزن تحلیل‌های مبتنی بر ادامه روند
+  reversal_weight: 1.0                       # وزن تحلیل‌های مبتنی بر بازگشت روند
+  trend_alignment_weight: 1.0                # وزن هم‌راستایی روند در تایم‌فریم‌های مختلف
+  # امتیاز پایه برای الگوها و رویدادهای مختلف شناسایی شده
+
+# ================= بخش امتیازدهی به الگوهای معاملاتی =================
+pattern_scores:
+  # --- الگوهای کندل استیک ---
+  hammer: 1.0                               # امتیاز الگوی چکش (نشانه‌ای از تغییر روند نزولی به صعودی)
+  inverted_hammer: 0.75                      # امتیاز الگوی چکش معکوس (نشانه احتمالی برگشت روند)
+  bullish_engulfing: 1.25                    # امتیاز الگوی دربرگیرنده صعودی (سیگنال قوی برگشت به روند صعودی)
+  piercing_line: 0.9                        # امتیاز الگوی خط نفوذی (سیگنال برگشت به روند صعودی)
+  morning_star: 1.5                         # امتیاز الگوی ستاره صبحگاهی (یکی از قوی‌ترین الگوهای برگشتی صعودی)
+  three_white_soldiers: 1.6                 # امتیاز الگوی سه سرباز سفید (سیگنال قوی ادامه روند صعودی)
+  dragonfly_doji: 0.75                      # امتیاز الگوی دوجی سنجاقک (نشانه تعادل با تمایل به صعود)
+  hanging_man:  0.85                           # امتیاز الگوی مرد آویزان (نشانه پایان روند صعودی)
+  shooting_star:  0.85                          # امتیاز الگوی ستاره دنباله‌دار (نشانه پایان روند صعودی)
+  bearish_engulfing: 1.25                    # امتیاز الگوی دربرگیرنده نزولی (سیگنال قوی برگشت به روند نزولی)
+  dark_cloud_cover: 1.0                     # امتیاز الگوی ابر سیاه (سیگنال برگشت به روند نزولی)
+  evening_star: 1.5                         # امتیاز الگوی ستاره عصرگاهی (سیگنال قوی برگشت به روند نزولی)
+  three_black_crows: 1.6                    # امتیاز الگوی سه کلاغ سیاه (سیگنال قوی ادامه روند نزولی)
+  gravestone_doji: 0.75                      # امتیاز الگوی دوجی سنگ قبر (نشانه تعادل با تمایل به نزول)
+  bullish_harami: 0.85                       # امتیاز الگوی هارامی صعودی (نشانه تغییر روند به صعودی)
+  bearish_harami: 0.85                       # امتیاز الگوی هارامی نزولی (نشانه تغییر روند به نزولی)
+  doji: 0.25                              # امتیاز الگوی دوجی (نشانه تردید و تعادل در بازار)
+
+  # --- اندیکاتورهای تکنیکال ---
+  macd_bullish_crossover: 2.2               # امتیاز تقاطع صعودی MACD (سیگنال خرید)
+  macd_bearish_crossover: 2.2               # امتیاز تقاطع نزولی MACD (سیگنال فروش)
+  macd_bullish_zero_cross: 1.8              # امتیاز عبور صعودی MACD از صفر (تأیید روند صعودی)
+  macd_bearish_zero_cross: 1.8              # امتیاز عبور نزولی MACD از صفر (تأیید روند نزولی)
+  rsi_oversold_reversal: 2.3                # امتیاز برگشت RSI از ناحیه اشباع فروش
+  rsi_overbought_reversal: 2.3              # امتیاز برگشت RSI از ناحیه اشباع خرید
+  rsi_bullish_divergence: 3.8               # امتیاز واگرایی مثبت RSI (سیگنال صعودی قوی)
+  rsi_bearish_divergence: 3.8               # امتیاز واگرایی منفی RSI (سیگنال نزولی قوی)
+  rsi_hidden_bullish_divergence: 3.0        # امتیاز واگرایی مخفی مثبت RSI (تأیید ادامه روند صعودی)
+  rsi_hidden_bearish_divergence: 3.0        # امتیاز واگرایی مخفی منفی RSI (تأیید ادامه روند نزولی)
+  stochastic_oversold_bullish_cross: 2.5    # امتیاز تقاطع صعودی استوکستیک در ناحیه اشباع فروش
+  stochastic_overbought_bearish_cross: 2.5  # امتیاز تقاطع نزولی استوکستیک در ناحیه اشباع خرید
+
+  # --- حمایت و مقاومت ---
+  broken_resistance: 3.0                    # امتیاز شکست سطح مقاومت (سیگنال صعودی قوی)
+  broken_support: 3.0                       # امتیاز شکست سطح حمایت (سیگنال نزولی قوی)
+
+# ================= بخش تشخیص رژیم بازار =================
+# تنظیمات مربوط به تشخیص وضعیت بازار و تطبیق استراتژی‌ها
+market_regime:
+  enabled: True                            # فعال/غیرفعال کردن تشخیص رژیم بازار
+  adx_period: 14                           # تعداد کندل‌ها برای محاسبه شاخص ADX (شاخص قدرت روند)
+  volatility_period: 20                    # تعداد کندل‌ها برای محاسبه ATR (شاخص نوسان)
+  strong_trend_threshold: 25               # حداقل مقدار ADX برای تشخیص روند قوی (بالاتر = روند قوی‌تر)
+  weak_trend_threshold: 20                 # حداقل مقدار ADX برای تشخیص روند ضعیف
+  high_volatility_threshold: 1.5           # نسبت ATR به قیمت برای تشخیص نوسان بالا (درصد)
+  low_volatility_threshold: 0.5            # نسبت ATR به قیمت برای تشخیص نوسان پایین (درصد)
+  adapt_strategy: True                     # فعال کردن تغییر خودکار پارامترهای استراتژی بر اساس رژیم بازار
+
+# ================= بخش پردازش سیگنال =================
+# تنظیمات مربوط به مدیریت و اعتبارسنجی سیگنال‌های معاملاتی تولید شده
+signal_processing:
+  symbols: []                                # لیست خاص نمادها برای پردازش (خالی = استفاده از نمادهای خودکار)
+  auto_forward_signals: True                 # ارسال خودکار سیگنال‌های معتبر به سیستم معاملات
+  signal_max_age_minutes: 30                 # حداکثر عمر مجاز یک سیگنال قبل از منقضی شدن (دقیقه)
+  check_incomplete_interval: 60              # فاصله زمانی بررسی مجدد نمادهایی با داده ناقص (ثانیه)
+  ohlcv_limit_per_tf: 500                    # تعداد کندل درخواستی برای هر تایم‌فریم از MarketDataFetcher
+  use_ensemble_strategy: True                # استفاده از استراتژی ترکیبی به جای استراتژی ساده
+  notification:                              # تنظیمات اعلان‌های مربوط به سیگنال‌ها
+    enabled: True                            # فعال/غیرفعال کردن اعلان برای سیگنال‌ها
+    min_score_to_notify: 69.0                # حداقل امتیاز سیگنال برای ارسال اعلان
+
+# ================= بخش معاملات =================
+# تنظیمات مربوط به اجرای معاملات و مدیریت پوزیشن‌های باز
+trading:
+  mode: 'simulation'                         # حالت ربات: 'simulation' (شبیه‌سازی) یا 'live' (واقعی)
+  auto_update_prices: True                   # به‌روزرسانی خودکار قیمت‌ها برای معاملات باز
+  price_update_interval: 10                  # فاصله زمانی بررسی قیمت‌ها برای حد ضرر/سود (ثانیه)
+  multi_tp:                                  # تنظیمات حد سود چندمرحله‌ای
+    enabled: True                            # فعال/غیرفعال کردن خروج تدریجی از معامله با چند حد سود
+
+# ================= بخش مدیریت ریسک =================
+# پارامترهای کلیدی برای کنترل ریسک و مدیریت سرمایه
+risk_management:
+  account_balance: 10000.0                   # موجودی حساب برای محاسبات ریسک (USDT)
+  account_risk_multiplier: 1.0               # ضریب کلی ریسک حساب (کمتر = ریسک کمتر)
+  max_risk_per_trade_percent: 1.5            # حداکثر درصد ریسک سرمایه در هر معامله (٪)
+  max_risk_per_symbol_percent: 5.0           # حداکثر درصد ریسک سرمایه روی یک نماد خاص (٪)
+  max_daily_risk_percent: 5.0                # حداکثر درصد ریسک روزانه قابل قبول (٪)
+  max_open_risk_percent: 10.0                # حداکثر درصد ریسک همزمان در کل معاملات باز (٪)
+  max_open_trades: 10                        # حداکثر تعداد معاملات باز همزمان
+  max_trades_per_symbol: 1                   # حداکثر تعداد معاملات باز همزمان روی یک نماد
+  min_risk_reward_ratio: 3.0                 # حداقل نسبت ریسک به پاداش برای ورود به معامله
+  preferred_risk_reward_ratio: 2.5           # نسبت ریسک به پاداش ترجیحی برای تنظیم حد سود
+
+  # تنظیمات بررسی همبستگی نمادها
+  use_correlation_check: True                # فعال کردن بررسی همبستگی قبل از معامله جدید
+  max_correlation_threshold: 0.7             # حداکثر همبستگی مجاز با معاملات باز (0 تا 1)
+  max_correlated_trades: 2                   # حداکثر تعداد معاملات همبسته مجاز
+  correlation_timeframe: '4h'                # تایم‌فریم محاسبه همبستگی
+  correlation_period: 100                    # تعداد کندل‌ها برای محاسبه همبستگی
+
+  # تنظیمات حد ضرر متحرک
+  use_trailing_stop: True                    # فعال کردن حد ضرر متحرک (دنباله‌رو)
+  trailing_stop_activation_percent: 3.0      # درصد سود لازم برای فعال شدن حد ضرر متحرک
+  trailing_stop_distance_percent: 2.25       # فاصله درصدی حد ضرر متحرک از قیمت
+  use_atr_based_trailing: True               # استفاده از شاخص ATR برای تنظیم فاصله حد ضرر
+  atr_trailing_multiplier: 2.25              # ضریب ATR برای تعیین فاصله حد ضرر متحرک
+  atr_trailing_period: 21                    # دوره زمانی محاسبه ATR (تعداد کندل)
+  use_structure_based_stops: False           # استفاده از سطوح مهم (سقف/کف) برای تعیین حد ضرر
+  swing_detection_lookback: 21               # دوره زمانی تشخیص سقف/کف‌ها (تعداد کندل)
+  use_time_based_stops: False                # فعال کردن خروج از معامله بر اساس زمان
+  max_trade_duration_hours: 48               # حداکثر زمان مجاز یک معامله باز (ساعت)
+
+  # تنظیمات اندازه پوزیشن (حجم معامله)
+  use_dynamic_position_sizing: True          # محاسبه پویای حجم معامله بر اساس ریسک و شرایط
+  drawdown_protection: True                  # کاهش ریسک در زمان ضرر مداوم (Drawdown)
+  max_drawdown_percent: 20.0                 # آستانه درصد افت سرمایه برای شروع حفاظت
+  winning_streak_factor: 1.1                 # ضریب افزایش ریسک به ازای هر برد متوالی
+  losing_streak_factor: 0.9                  # ضریب کاهش ریسک به ازای هر باخت متوالی
+  max_risk_increase: 1.5                     # حداکثر ضریب افزایش ریسک نسبت به حالت پایه
+  kelly_fraction: 0.5                        # ضریب محافظه‌کاری در فرمول کلی (0-1)
+
+  # سایر قوانین مدیریت ریسک
+  allow_opposite_trades: False               # اجازه معاملات همزمان در جهت مخالف روی یک نماد
+  fixed_position_size: 200                   # حجم ثابت معاملات (USDT) - جایگزین محاسبه پویا
+  max_position_size: 200                     # حداکثر اندازه مجاز پوزیشن (USDT)
+  default_stop_loss_percent: 3               # درصد حد ضرر پیش‌فرض اگر سایر روش‌ها کار نکنند
+
+  # تنظیمات همبستگی با بیت‌کوین
+  btc_correlation:
+    consider_btc_trend: true                 # در نظر گرفتن روند بیت‌کوین در تصمیم‌گیری
+    btc_symbol: "BTCUSDT"                    # نماد بیت‌کوین برای تحلیل همبستگی
+
+    # تنظیمات تایم‌فریم‌های تحلیل همبستگی
+    correlation_timeframes: ["15m", "1h", "4h", "1d"]  # تایم‌فریم‌های محاسبه همبستگی
+    correlation_timeframe_weights: [0.1, 0.2, 0.3, 0.4]  # وزن هر تایم‌فریم (باید مجموع 1 باشد)
+    primary_correlation_timeframe: "1h"      # تایم‌فریم اصلی برای محاسبه همبستگی
+    correlation_period: 100                  # تعداد کندل‌ها برای محاسبه همبستگی
+
+    # آستانه‌های همبستگی
+    inverse_correlation_threshold: -0.2      # آستانه همبستگی معکوس
+    zero_correlation_threshold: 0.2          # آستانه عدم همبستگی
+    strong_correlation_threshold: 0.4        # آستانه همبستگی قوی
+
+    # تنظیمات تحلیل تاخیر (تاثیر حرکت بیت‌کوین با تاخیر روی آلت‌کوین‌ها)
+    analyze_lag_correlation: true            # بررسی همبستگی با تاخیر زمانی
+    max_lag_periods: 5                       # حداکثر دوره‌های تاخیر برای بررسی
+
+    # تنظیمات تحلیل روند بیت‌کوین
+    btc_trend_timeframe: "4h"                # تایم‌فریم تشخیص روند بیت‌کوین
+    btc_trend_period: 50                     # دوره زمانی تشخیص روند (تعداد کندل)
+    btc_trend_ema_fast: 20                   # دوره میانگین متحرک نمایی سریع
+    btc_trend_ema_slow: 50                   # دوره میانگین متحرک نمایی کند
+    btc_trend_strength_threshold: 0.01       # آستانه قدرت روند (فاصله دو میانگین متحرک)
+
+    # تنظیمات تحلیل حجم معاملات بیت‌کوین
+    analyze_btc_volume: true                 # تحلیل حجم معاملات بیت‌کوین
+    btc_volume_timeframe: "1d"               # تایم‌فریم تحلیل حجم
+    btc_volume_period: 20                    # دوره زمانی میانگین حجم (تعداد کندل)
+    btc_high_volume_threshold: 1.5           # ضریب تشخیص حجم بالا نسبت به میانگین
+
+    # زمان انقضای کش (به ثانیه)
+    correlation_cache_expiry_seconds: 3600   # انقضای کش داده‌های همبستگی (1 ساعت)
+    btc_trend_cache_expiry: 1800             # انقضای کش داده‌های روند (30 دقیقه)
+    btc_volume_cache_expiry: 1800            # انقضای کش داده‌های حجم (30 دقیقه)
+
+# ================= بخش آزمایش برگشتی (Backtest) =================
+# تنظیمات مربوط به اجرای بک‌تست و ارزیابی استراتژی روی داده‌های تاریخی
+backtest:
+  results_dir: 'backtest_results'            # پوشه ذخیره نتایج بک‌تست
+  commission_rate: 0.0006                    # نرخ کارمزد در هر سمت معامله (0.0006 = 0.06%)
+  slippage: 0.0005                           # میزان لغزش قیمت فرضی در ورود/خروج (0.0005 = 0.05%)
+  parameters_to_test:                        # لیست پارامترهایی که در Grid Search بک‌تست می‌شوند
+    - 'signal_generation.minimum_signal_score'
+    - 'risk_management.max_risk_per_trade_percent'
+    - 'risk_management.trailing_stop_distance_percent'
+    - 'risk_management.atr_trailing_multiplier'
+  parallel_backtests: True                   # اجرای موازی بک‌تست‌ها (استفاده از چند هسته CPU)
+  max_workers: 4                             # تعداد هسته‌های CPU برای بک‌تست موازی
+
+# ================= بخش لاگینگ و اطلاع‌رسانی =================
+# تنظیمات مربوط به ثبت وقایع (Logging)
+logging:
+  level: 'INFO'                              # سطح لاگ: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s' # فرمت پیام‌های لاگ
+  file: 'logs/crypto_bot.log'                # مسیر فایل لاگ (اگر نمی‌خواهید در فایل ذخیره شود، null یا حذف کنید)
+  rotate: True                               # استفاده از چرخش فایل لاگ برای جلوگیری از فایل‌های بزرگ
+  max_size: 10485760                         # اندازه حداکثر فایل لاگ قبل از چرخش (10MB)
+  backup_count: 5                            # تعداد فایل‌های لاگ پشتیبان که نگهداری می‌شود
+
+# تنظیمات کلی اطلاع‌رسانی (Notifications)
+notification:
+  enabled: True                              # فعال/غیرفعال کردن کلی سیستم اطلاع‌رسانی
+  channels:                                  # تنظیمات کانال‌های اطلاع‌رسانی
+    telegram:
+      enabled: False                         # فعال کردن اعلان تلگرام
+      token: 'YOUR_TELEGRAM_BOT_TOKEN'       # توکن ربات تلگرام
+      chat_id: 'YOUR_TELEGRAM_CHAT_ID'       # شناسه چت یا کانال تلگرام
+    discord:
+      enabled: False                         # فعال کردن اعلان دیسکورد
+      webhook_url: 'YOUR_DISCORD_WEBHOOK_URL' # آدرس Webhook دیسکورد
+  events:                                    # رویدادهایی که باعث ارسال اعلان می‌شوند
+    signal_generated: False                  # اعلان به ازای هر سیگنال (ممکن است زیاد باشد)
+    trade_opened: True                       # اعلان هنگام باز شدن معامله جدید
+    trade_closed: True                       # اعلان هنگام بسته شدن معامله
+    stop_loss_hit: True                      # اعلان هنگام فعال شدن حد ضرر
+    take_profit_hit: True                    # اعلان هنگام فعال شدن حد سود
+    trailing_stop_updated: False             # اعلان هر بار که حد ضرر متحرک جابجا می‌شود
+    config_changed: True                     # اعلان هنگام تغییر تنظیمات سیستم
+  min_signal_score: 35.0                     # حداقل امتیاز سیگنال برای ارسال اعلان
+
+# ================= بخش تنظیمات هسته سیستم =================
+# تنظیمات مربوط به عملکرد کلی و منابع سیستم
+core:
+  max_workers: 8                             # حداکثر تعداد ترد (Worker) برای پردازش موازی
+  max_concurrent_analysis: 8                 # حداکثر تعداد نمادهایی که همزمان تحلیل می‌شوند
+  main_loop_interval: 300                    # فاصله زمانی چرخه اصلی پردازش (ثانیه)
+  use_shared_session: True                   # استفاده از یک نشست HTTP مشترک برای کل سیستم
+
+# ================= بخش ذخیره‌سازی =================
+# تنظیمات مربوط به محل ذخیره فایل‌ها و داده‌ها
+storage:
+  database_path: 'data/trades.db'            # مسیر فایل دیتابیس SQLite معاملات
+  save_signal_history: True                  # ذخیره تاریخچه تمام سیگنال‌های تولید شده
+  save_charts: True                          # ذخیره نمودارها در حین معاملات یا بک‌تست
+  charts_directory: 'data/charts'            # پوشه ذخیره نمودارها
+
+# ================= بخش مدیریت تنظیمات =================
+# تنظیمات مربوط به مدیریت خودکار تنظیمات و به‌روزرسانی آنها در زمان اجرا
+config_management:
+  auto_reload: True                          # بررسی خودکار تغییرات در فایل تنظیمات
+  check_interval_seconds: 30                 # فاصله زمانی بررسی تغییرات (ثانیه)
+  notify_changes: True                       # ارسال اعلان هنگام تشخیص تغییرات
+  backup_before_update: True                 # ایجاد پشتیبان قبل از اعمال تغییرات جدید
+  apply_changes_immediately: True            # اعمال فوری تغییرات در حافظه بدون نیاز به راه‌اندازی مجدد
+  sections_requiring_restart:                # بخش‌هایی که تغییر آنها نیاز به راه‌اندازی مجدد دارد
+    - 'exchange.api_key'                     # کلید API صرافی (حساس از نظر امنیتی)
+    - 'exchange.api_secret'                  # کلید مخفی API (حساس از نظر امنیتی)
+    - 'exchange.api_passphrase'              # رمز عبور API (حساس از نظر امنیتی)
+    - 'data_fetching.market_type'            # نوع بازار (فیوچرز/اسپات)
+    - 'data_fetching.primary_api'            # API اصلی برای دریافت داده‌ها
+    - 'data_fetching.cache.use_redis'        # تنظیمات پایه‌ای کش
+    - 'storage.database_path'                # مسیر دیتابیس (نیاز به بازگشایی مجدد)
+
+# ================= بخش تنظیمات Trading Brain AI =================
+# تنظیمات مربوط به مدل‌های هوش مصنوعی، یادگیری ماشین و بهینه‌سازی پارامترها
+trading_brain_ai:
+  enabled: True                              # فعال/غیرفعال کردن کلی ماژول هوش مصنوعی
+  models_dir: 'models/trading_brain'         # پوشه ذخیره مدل‌های آموزش دیده هوش مصنوعی
+  data_dir: 'data/trading_brain'             # پوشه ذخیره داده‌های مرتبط با هوش مصنوعی
+
+  # تنظیمات مهندسی ویژگی (Feature Engineering)
+  feature_engineering:
+    use_technical_indicators: True           # استفاده از اندیکاتورهای تکنیکال به عنوان ویژگی
+    use_price_patterns: True                 # استفاده از الگوهای قیمتی به عنوان ویژگی
+    use_volatility_features: True            # استفاده از ویژگی‌های مرتبط با نوسان
+    use_volume_features: True                # استفاده از ویژگی‌های مرتبط با حجم معاملات
+    lookback_window: 20                      # تعداد کندل گذشته برای استخراج ویژگی
+    target_horizons: [1, 5]                  # افق‌های پیش‌بینی (تعداد کندل آینده)
+    scaler_type: 'robust'                    # نوع مقیاس‌بندی داده‌ها: 'standard', 'minmax', 'robust'
+    feature_selection: True                  # فعال کردن انتخاب خودکار ویژگی‌های مهم
+    feature_selection_method: 'importance'   # روش انتخاب ویژگی (فعلاً فقط 'importance')
+    importance_threshold: 0.01               # حداقل اهمیت ویژگی برای انتخاب شدن
+
+  # تنظیمات مدل‌های پیش‌بینی مختلف
+  prediction_models:
+    lstm:                                    # مدل شبکه عصبی LSTM (مناسب برای داده‌های سری زمانی)
+      enabled: True                          # فعال/غیرفعال کردن این نوع مدل
+      units: [64, 32]                        # تعداد واحدهای هر لایه LSTM
+      dropout: 0.2                           # نرخ Dropout برای جلوگیری از Overfitting
+      learning_rate: 0.001                   # نرخ یادگیری در آموزش مدل
+      batch_size: 32                         # اندازه دسته‌های آموزشی
+      epochs: 100                            # تعداد دورهای آموزش
+      patience: 10                           # تعداد دورهای انتظار برای Early Stopping
+      bidirectional: True                    # استفاده از LSTM دوطرفه
+
+    transformer:                             # مدل Transformer (مناسب برای روابط پیچیده و طولانی)
+      enabled: False                         # فعلاً غیرفعال
+      embedding_dim: 64                      # بعد embedding
+      num_heads: 4                           # تعداد سرهای توجه (Attention)
+      ff_dim: 64                             # بعد لایه Feed Forward
+      num_transformer_blocks: 2              # تعداد بلوک‌های Transformer
+      mlp_units: [32]                        # واحدهای لایه‌های MLP نهایی
+      dropout_rate: 0.25                     # نرخ Dropout
+      learning_rate: 0.001                   # نرخ یادگیری
+      batch_size: 32                         # اندازه دسته آموزشی
+      epochs: 100                            # تعداد دورهای آموزش
+      patience: 10                           # تعداد دورهای انتظار برای Early Stopping
+
+    cnn:                                     # مدل شبکه عصبی کانولوشنی (مناسب برای الگوهای محلی)
+      enabled: False                         # فعلاً غیرفعال
+      filters: [64, 128]                     # تعداد فیلترها در هر لایه
+      kernel_sizes: [3, 3]                   # اندازه کرنل‌ها
+      pool_sizes: [2, 2]                     # اندازه Max Pooling
+      dense_units: [64]                      # واحدهای لایه‌های متصل
+      dropout_rate: 0.3                      # نرخ Dropout
+      learning_rate: 0.001                   # نرخ یادگیری
+      batch_size: 32                         # اندازه دسته آموزشی
+      epochs: 100                            # تعداد دورهای آموزش
+      patience: 10                           # تعداد دورهای انتظار برای Early Stopping
+
+    xgboost:                                 # مدل XGBoost (الگوریتم درخت تصمیم تقویت شده - قدرتمند و سریع)
+      enabled: True                          # فعال/غیرفعال کردن این نوع مدل
+      n_estimators: 100                      # تعداد درخت‌های تصمیم
+      max_depth: 5                           # حداکثر عمق هر درخت
+      learning_rate: 0.1                     # نرخ یادگیری
+      subsample: 0.8                         # نسبت نمونه‌برداری از داده‌ها
+      colsample_bytree: 0.8                  # نسبت نمونه‌برداری از ستون‌ها
+
+  # تنظیمات مدل ترکیبی (Ensemble)
+  ensemble:
+    method: 'weighted'                       # روش ترکیب مدل‌ها (فعلاً فقط 'weighted')
+    weights:                                 # وزن پیش‌فرض هر مدل در ترکیب
+      lstm: 0.5                              # وزن مدل LSTM
+      xgboost: 0.5                           # وزن مدل XGBoost
+    calibrate_probabilities: True            # کالیبره کردن احتمالات خروجی مدل‌ها
+    min_confidence_threshold: 0.6            # حداقل اطمینان لازم برای تایید سیگنال
+
+  # تنظیمات یادگیری آنلاین (Online Learning)
+  online_learning:
+    enabled: True                            # فعال/غیرفعال کردن یادگیری مداوم در زمان اجرا
+    adaptation_frequency: 'after_trades'     # زمان به‌روزرسانی مدل‌ها: 'daily', 'hourly', 'after_trades'
+    min_samples_for_update: 50               # حداقل تعداد نمونه جدید برای به‌روزرسانی مدل
+    sample_buffer_size: 500                  # حداکثر تعداد نمونه‌های ذخیره شده در بافر
+    learning_rate: 0.01                      # نرخ یادگیری برای به‌روزرسانی آنلاین (کمتر از آموزش اولیه)
+    update_position_sizer: True              # به‌روزرسانی مدل تعیین اندازه معامله
+    update_ensemble: True                    # به‌روزرسانی وزن‌های مدل ترکیبی
+    use_weighted_samples: True               # وزن‌دهی به نمونه‌ها براساس تازگی یا اهمیت
+
+  # تنظیمات تعیین‌کننده اندازه معامله (Position Sizer)
+  position_sizer:
+    enabled: False                           # فعلاً غیرفعال
+    model_type: 'ppo'                        # نوع الگوریتم یادگیری تقویتی: 'ppo', 'a2c', 'sac'
+    train_steps: 50000                       # تعداد گام‌های آموزش اولیه
+    learning_rate: 0.0003                    # نرخ یادگیری
+    ent_coef: 0.01                           # ضریب آنتروپی (برای تشویق اکتشاف)
+    batch_size: 64                           # اندازه دسته آموزشی
+    gamma: 0.99                              # ضریب تنزیل پاداش‌های آینده
+    window_size: 30                          # اندازه پنجره مشاهده برای تصمیم‌گیری
+    reward_scaling: 1.0                      # مقیاس‌بندی پاداش‌ها
+
+  # تنظیمات بهینه‌سازی هایپرپارامتر
+  hyperparameter_optimization:
+    enabled: False                           # فعلاً غیرفعال
+    n_trials: 20                             # تعداد آزمایش‌های بهینه‌سازی
+    timeout: 3600                            # زمان حداکثر برای بهینه‌سازی (ثانیه)
+    optimization_metric: 'accuracy'          # معیار بهینه‌سازی: 'accuracy', 'f1', 'sharpe_ratio' و...
+    optimization_direction: 'maximize'       # جهت بهینه‌سازی: 'maximize' یا 'minimize'
+    cv_folds: 3                              # تعداد بخش‌ها در اعتبارسنجی متقابل
+
+# ================= بخش تنظیمات ML Signal Integration =================
+# تنظیمات یکپارچه‌سازی سیگنال‌های هوش مصنوعی با سیستم معاملاتی
+ml_signal_integration:
+  enabled: True                              # فعال/غیرفعال کردن یکپارچه‌سازی سیگنال‌های ML
+  enhance_signals: True                      # تقویت سیگنال‌های تکنیکال با پیش‌بینی‌های هوش مصنوعی
+  register_trade_results: True               # ثبت نتایج معاملات برای بهبود مدل‌های ML
+  sync_interval_hours: 1                     # فاصله زمانی همگام‌سازی داده‌های تاریخی (ساعت)
