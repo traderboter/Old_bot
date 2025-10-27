@@ -564,7 +564,267 @@ analysis_data['volatility'] = self.analyze_volatility_conditions(df)
 
 **پایان بخش 3**
 
+---
+
+## بخش ۴: تشخیص رژیم بازار (Market Regime Detection)
+
+یکی از **هوشمندترین قسمت‌های** این سیستم، تشخیص وضعیت بازار و **تطبیق خودکار پارامترها** با شرایط است.
+
+### 4.1 چرا Market Regime مهم است؟
+
+**مشکل:** یک استراتژی ثابت در همه شرایط بازار موفق نیست!
+
+- در **بازار روندار (Trending)**: باید با روند حرکت کرد
+- در **بازار رنج (Range)**: باید از نوسانات استفاده کرد
+- در **نوسان بالا**: باید ریسک کاهش یابد
+
+**راه‌حل:** تشخیص خودکار رژیم و تطبیق پارامترها
+
+### 4.2 نحوه تشخیص رژیم بازار
+
+**محل:** `signal_generator.py:226-500` (کلاس MarketRegimeDetector)
+
+```python
+regime_result = self.regime_detector.detect_regime(df)
+```
+
+#### مرحله 1: محاسبه ADX (Average Directional Index)
+
+```python
+adx = talib.ADX(high, low, close, timeperiod=14)
+plus_di = talib.PLUS_DI(high, low, close, timeperiod=14)
+minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
+```
+
+**ADX چه می‌گوید؟**
+- ADX > 25: روند قوی وجود دارد
+- ADX 20-25: روند ضعیف
+- ADX < 20: بازار رنج است (بدون روند)
+
+**جهت روند:**
+- +DI > -DI → روند صعودی (Bullish)
+- -DI > +DI → روند نزولی (Bearish)
+
+#### مرحله 2: محاسبه ATR% (نوسان)
+
+```python
+atr = talib.ATR(high, low, close, timeperiod=20)
+atr_percent = (atr / close) * 100
+```
+
+**سطوح نوسان:**
+- ATR% > 1.5: نوسان بالا (High Volatility)
+- ATR% 0.5-1.5: نوسان عادی (Normal)
+- ATR% < 0.5: نوسان پایین (Low Volatility)
+
+#### مرحله 3: تعیین رژیم نهایی
+
+رژیم بازار از **ترکیب ADX و ATR** ساخته می‌شود:
+
+```python
+if adx > 25:
+    trend_strength = 'strong'
+elif adx > 20:
+    trend_strength = 'weak'
+else:
+    trend_strength = 'no_trend'
+
+# ترکیب با volatility
+regime = f'{trend_strength}_trend_{volatility}'
+```
+
+**رژیم‌های ممکن:**
+
+| ADX | ATR% | رژیم نهایی |
+|-----|------|-----------|
+| > 25 | Normal | `strong_trend_normal` ✅ |
+| > 25 | High | `strong_trend_high` ⚠️ |
+| > 25 | Low | `strong_trend_low` ✅ |
+| 20-25 | Normal | `weak_trend_normal` |
+| 20-25 | High | `weak_trend_high` ⚠️ |
+| < 20 | Normal | `range_normal` |
+| < 20 | High | `range_high` ❌ |
+
+### 4.3 تطبیق پارامترها با رژیم بازار
+
+**محل:** `signal_generator.py:419-500`
+
+```python
+adapted_config = self.regime_detector.get_adapted_parameters(regime_info, base_config)
+```
+
+وقتی رژیم بازار مشخص شد، سیستم **خودکار** پارامترهای زیر را تنظیم می‌کند:
+
+#### 1. حداکثر ریسک هر معامله
+
+**پارامتر پایه:** 1.5%
+
+**تطبیق:**
+```python
+if trend_strength == 'strong':
+    risk_modifier = 1.1  # ریسک 10% بیشتر (1.65%)
+elif trend_strength == 'no_trend':
+    risk_modifier = 0.8  # ریسک 20% کمتر (1.2%)
+
+if volatility == 'high':
+    risk_modifier *= 0.7  # ریسک 30% کمتر
+```
+
+**مثال:**
+- رژیم = `strong_trend_normal`: ریسک = 1.5 × 1.1 = **1.65%**
+- رژیم = `range_high`: ریسک = 1.5 × 0.8 × 0.7 = **0.84%**
+
+#### 2. نسبت ریسک به پاداش (Risk-Reward Ratio)
+
+**پارامتر پایه:** 2.5
+
+**تطبیق:**
+```python
+if trend_strength == 'strong':
+    rr_modifier = 1.2  # RR بالاتر در روند قوی (3.0)
+elif trend_strength == 'no_trend':
+    rr_modifier = 0.8  # RR پایین‌تر در رنج (2.0)
+```
+
+**مثال:**
+- رژیم = `strong_trend_normal`: RR = 2.5 × 1.2 = **3.0**
+- رژیم = `range_normal`: RR = 2.5 × 0.8 = **2.0**
+
+#### 3. فاصله Stop Loss
+
+**پارامتر پایه:** 1.5%
+
+**تطبیق:**
+```python
+if volatility == 'high':
+    sl_modifier = 1.3  # SL گسترده‌تر (1.95%)
+elif volatility == 'low':
+    sl_modifier = 0.8  # SL محکم‌تر (1.2%)
+```
+
+**مثال:**
+- رژیم = `strong_trend_high`: SL = 1.5 × 1.3 = **1.95%**
+- رژیم = `strong_trend_low`: SL = 1.5 × 0.8 = **1.2%**
+
+#### 4. حداقل امتیاز سیگنال
+
+**پارامتر پایه:** 33
+
+**تطبیق:**
+```python
+if trend_strength == 'no_trend' or volatility == 'high':
+    score_modifier = 1.1  # شرایط سخت‌تر (36.3)
+```
+
+**مثال:**
+- رژیم = `strong_trend_normal`: حداقل امتیاز = **33**
+- رژیم = `range_high`: حداقل امتیاز = 33 × 1.1 = **36.3**
+
+### 4.4 خروجی کامل تشخیص رژیم
+
+```python
+{
+    'regime': 'strong_trend_normal',
+    'trend_strength': 'strong',
+    'trend_direction': 'bullish',
+    'volatility': 'normal',
+    'confidence': 0.85,
+    'details': {
+        'adx': 28.5,
+        'plus_di': 32.0,
+        'minus_di': 18.0,
+        'atr_percent': 1.2
+    }
+}
+```
+
+### 4.5 تأثیر رژیم بر امتیازدهی
+
+رژیم بازار **مستقیماً** بر امتیاز تأثیر نمی‌گذارد، بلکه:
+
+1. **پارامترها را تغییر می‌دهد** (RR, SL, min_score)
+2. **فیلتر می‌کند**: سیگنال‌های ضعیف در شرایط بد رد می‌شوند
+3. **تأیید می‌کند**: سیگنال همسو با رژیم امتیاز بالاتری می‌گیرد
+
+**مثال:**
+
+```
+سیگنال خرید در تایم‌فریم 5m:
+امتیاز اولیه = 65
+
+رژیم = strong_trend_normal (روند صعودی قوی)
+جهت سیگنال = long (خرید)
+→ همسویی با روند → امتیاز × 1.15 = 74.75 ✅
+
+اگر رژیم = strong_trend_normal ولی سیگنال = short
+→ مخالف روند → امتیاز × 0.85 = 55.25 ⚠️
+```
+
+### 4.6 جدول تأثیر رژیم‌های مختلف
+
+| رژیم | ریسک | RR | SL | حداقل امتیاز | توصیه |
+|------|------|----|----|--------------|-------|
+| `strong_trend_normal` | 1.65% | 3.0 | 1.5% | 33 | ✅ بهترین شرایط |
+| `strong_trend_high` | 1.2% | 3.0 | 1.95% | 36 | ⚠️ محتاطانه |
+| `weak_trend_normal` | 1.5% | 2.5 | 1.5% | 33 | ✅ خوب |
+| `range_normal` | 1.2% | 2.0 | 1.5% | 33 | ⚠️ سیگنال‌های رنج |
+| `range_high` | 0.84% | 2.0 | 1.95% | 36 | ❌ خطرناک |
+
+### 4.7 مثال عملی کامل
+
+**وضعیت:** BTC/USDT در تایم‌فریم 1h
+
+```python
+# تشخیص رژیم
+regime = {
+    'regime': 'strong_trend_high',
+    'trend_direction': 'bullish',
+    'adx': 32.5,
+    'atr_percent': 2.8  # نوسان بالا!
+}
+
+# تطبیق پارامترها
+adapted_params = {
+    'max_risk_per_trade_percent': 1.2,   # کاهش از 1.5
+    'preferred_risk_reward_ratio': 3.0,  # افزایش به 3.0
+    'default_stop_loss_percent': 1.95,   # افزایش از 1.5
+    'minimum_signal_score': 36.3         # افزایش از 33
+}
+
+# سیگنال خرید
+signal = {
+    'direction': 'long',
+    'score': 72,
+    'entry': 50000,
+    'stop_loss': 49025,  # 1.95% پایین‌تر
+    'take_profit': 52925  # RR=3.0 → 2925 پیپ سود
+}
+
+# بررسی نهایی
+همسویی با روند: ✅ (bullish + long)
+امتیاز > حداقل: ✅ (72 > 36.3)
+→ سیگنال تأیید می‌شود!
+```
+
+---
+
+## خلاصه بخش 4: اهمیت Market Regime
+
+✅ **مزایا:**
+- تطبیق خودکار با شرایط بازار
+- کاهش ریسک در شرایط خطرناک
+- افزایش سود در شرایط مناسب
+- فیلتر کردن سیگنال‌های ضعیف
+
+⚠️ **نکات مهم:**
+- رژیم بازار در **تایم‌فریم‌های بالاتر** (1h, 4h) معتبرتر است
+- در بازار رنج با نوسان بالا → **خطر زیاد!**
+- همسویی با روند → **احتمال موفقیت بالاتر**
+
+---
+
+**پایان بخش 4**
+
 در بخش بعدی توضیح می‌دهم:
-- **بخش 4:** Market Regime Detection و تطبیق پارامترها
-- **بخش 5:** ترکیب امتیازات چند تایم‌فریمی
+- **بخش 5:** ترکیب امتیازات چند تایم‌فریمی (اینجا جادو اتفاق می‌افتد!)
 - **بخش 6:** ML/AI Enhancement و محاسبه Final Score
