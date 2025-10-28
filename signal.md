@@ -2387,32 +2387,364 @@ else:
 
 ---
 
-#### مرحله 6: شناسایی سطوح حمایت/مقاومت (Support/Resistance)
+#### مرحله 6: شناسایی سطوح حمایت/مقاومت (Support/Resistance Detection)
+
+**محل:** `signal_generator.py:2312-2414`
+
 ```python
-analysis_data['support_resistance'] = self.detect_support_resistance(df)
+analysis_data['support_resistance'] = self.detect_support_resistance(df, lookback=50)
 ```
 
-**روش شناسایی:**
-- پیدا کردن نقاط بازگشت قیمت (Pivot Points)
-- محاسبه قدرت هر سطح بر اساس تعداد تست
-- تشخیص شکست سطوح (Breakout)
+این تحلیل **سطوح کلیدی حمایت و مقاومت** را شناسایی کرده و قدرت آنها را محاسبه می‌کند. سطوح S/R نقاطی هستند که قیمت بارها در آنها واکنش نشان داده است.
 
-**خروجی:**
+---
+
+##### 🔍 الگوریتم شناسایی (4 مرحله اصلی)
+
+**مرحله 1: پیدا کردن Peaks و Valleys (نقاط بازگشت)**
+
+```python
+# استفاده از scipy.signal.find_peaks با فیلترهای کیفی
+resistance_peaks, _ = self.find_peaks_and_valleys(
+    highs,
+    order=3,           # حداقل 3 کندل برای تشکیل peak
+    distance=5         # حداقل فاصله بین peaks
+)
+_, support_valleys = self.find_peaks_and_valleys(
+    lows,
+    order=3,
+    distance=5
+)
+```
+
+**کد مرجع:** `signal_generator.py:1605-1656`
+
+**فرآیند:**
+1. **Peak Detection:** قله‌های قیمت با `scipy.signal.find_peaks()` شناسایی می‌شوند
+2. **Valley Detection:** دره‌های قیمت با اعمال peak detection روی `-data`
+3. **Prominence Filter:** فقط peaks با برجستگی بالا (`prominence >= median * 0.5`) حفظ می‌شوند
+4. **Quality Filter:** حذف peaks ضعیف بر اساس `width` و `rel_height`
+
+**فرمول Prominence:**
+```python
+prominence = np.std(data) * prominence_factor  # prominence_factor = 0.1
+quality_threshold = np.median(prominences) * 0.5
+valid_peaks = peaks[prominences >= quality_threshold]
+```
+
+---
+
+**مرحله 2: ادغام سطوح نزدیک (Level Consolidation)**
+
+سطوحی که به هم نزدیک هستند در یک **cluster** ادغام می‌شوند:
+
+```python
+def consolidate_levels(levels: np.ndarray, atr: float):
+    threshold = atr * 0.3  # سطوح نزدیکتر از 30% ATR ادغام می‌شوند
+
+    # Clustering الگوریتم
+    for level in sorted_levels:
+        if abs(level - cluster_mean) <= threshold:
+            current_cluster.append(level)  # اضافه به cluster فعلی
+        else:
+            save_cluster()                 # ذخیره cluster قبلی
+            start_new_cluster(level)       # شروع cluster جدید
+```
+
+**کد مرجع:** `signal_generator.py:2333-2370`
+
+**محاسبه قدرت Cluster:**
+```python
+cluster_mean = np.mean(current_cluster)           # میانگین قیمت‌های cluster
+cluster_strength = min(1.0, len(cluster) / 3) *   # تعداد تست‌ها (max = 3)
+                   (1.0 - std/mean)                # یکنواختی cluster
+```
+
+**فاکتورهای قدرت:**
+- **تعداد تست‌ها:** هر چه سطح بیشتر تست شود → قوی‌تر
+- **یکنواختی:** cluster متمرکزتر → قوی‌تر (std کمتر)
+
+**مثال:**
+```python
+# سطوح خام: [50000, 50050, 50100, 51000, 51020]
+# با ATR = 200 → threshold = 60
+
+Cluster 1: [50000, 50050]  # فاصله < 60
+→ mean = 50025, strength = 0.67 * 0.999 = 0.66
+
+Cluster 2: [50100]
+→ mean = 50100, strength = 0.33
+
+Cluster 3: [51000, 51020]  # فاصله < 60
+→ mean = 51010, strength = 0.67 * 0.998 = 0.66
+```
+
+---
+
+**مرحله 3: تشخیص شکست سطوح (Breakout Detection)**
+
+**کد مرجع:** `signal_generator.py:2384-2387`
+
+```python
+# شکست مقاومت (صعودی)
+broken_resistance = next((level for level in resistance_levels if
+    current_close > level['price'] and      # قیمت فعلی بالاتر از سطح
+    prev_low < level['price']               # کندل قبلی زیر سطح بود
+), None)
+
+# شکست حمایت (نزولی)
+broken_support = next((level for level in support_levels if
+    current_close < level['price'] and      # قیمت فعلی پایین‌تر از سطح
+    prev_high > level['price']              # کندل قبلی بالای سطح بود
+), None)
+```
+
+**شرایط Breakout:**
+1. قیمت فعلی **از سطح عبور کند**
+2. کندل قبلی **در سمت دیگر سطح** بوده باشد
+3. یعنی breakout در همین کندل اتفاق افتاده (تازه شکسته)
+
+---
+
+**مرحله 4: تحلیل Zone ها (ناحیه‌های چند لایه)**
+
+**کد مرجع:** `signal_generator.py:2416-2463`
+
+برخی نواحی **چند سطح S/R نزدیک هم** دارند که یک **Zone قوی** می‌سازند:
+
+```python
+def _analyze_sr_zones(levels, current_price, zone_type):
+    # Clustering سطوح که < 1% فاصله دارند
+    for i in range(1, len(sorted_levels)):
+        distance_pct = abs(level[i] - level[i-1]) / level[i-1]
+        if distance_pct < 0.01:  # کمتر از 1%
+            current_cluster.append(level[i])
+        else:
+            if len(cluster) >= 2:  # حداقل 2 سطح
+                zones.append(cluster)
+```
+
+**مشخصات هر Zone:**
 ```python
 {
-    'nearest_support': 49800,
-    'nearest_resistance': 50200,
-    'support_strength': 0.9,
-    'resistance_strength': 0.85,
-    'near_level': True,           # قیمت نزدیک سطح
-    'breakout_detected': False
+    'min': 49900,              # کف zone
+    'max': 50100,              # سقف zone
+    'center': 50000,           # مرکز zone
+    'width': 200,              # عرض zone (max - min)
+    'strength': 0.85,          # میانگین قدرت سطوح داخل zone
+    'levels_count': 3,         # تعداد سطوح در zone
+    'distance_to_price': 150   # فاصله تا قیمت فعلی
 }
 ```
 
-**امتیازدهی:**
-- سیگنال خرید نزدیک حمایت قوی → **+15 تا +20 امتیاز**
-- سیگنال فروش نزدیک مقاومت قوی → **+15 تا +20 امتیاز**
-- Breakout تأیید شده → **+25 تا +35 امتیاز**
+**کاربرد Zones:**
+- Zone های عریض → **ناحیه مهم تردید**
+- Zone با `levels_count` بالا → **بسیار قوی**
+- نزدیک بودن به zone → **احتمال واکنش قیمت**
+
+---
+
+##### 📊 خروجی کامل
+
+```python
+{
+    'status': 'ok',
+
+    # سطوح مقاومت (بالای قیمت فعلی)
+    'resistance_levels': [
+        {'price': 50200, 'strength': 0.85},
+        {'price': 51000, 'strength': 0.92},
+        {'price': 52500, 'strength': 0.67}
+    ],
+
+    # سطوح حمایت (پایین قیمت فعلی)
+    'support_levels': [
+        {'price': 49800, 'strength': 0.90},
+        {'price': 48500, 'strength': 0.78},
+        {'price': 47200, 'strength': 0.65}
+    ],
+
+    # جزئیات
+    'details': {
+        'nearest_resistance': {'price': 50200, 'strength': 0.85},
+        'nearest_support': {'price': 49800, 'strength': 0.90},
+        'broken_resistance': None,                    # یا {'price': ..., 'strength': ...}
+        'broken_support': None,
+        'atr': 180.5
+    },
+
+    # Zone های مقاومت
+    'resistance_zones': {
+        'status': 'ok',
+        'zones': [
+            {
+                'min': 50150, 'max': 50250, 'center': 50200,
+                'width': 100, 'strength': 0.88,
+                'levels_count': 3, 'distance_to_price': 200
+            }
+        ]
+    },
+
+    # Zone های حمایت
+    'support_zones': {
+        'status': 'ok',
+        'zones': [
+            {
+                'min': 49750, 'max': 49850, 'center': 49800,
+                'width': 100, 'strength': 0.91,
+                'levels_count': 2, 'distance_to_price': 200
+            }
+        ]
+    }
+}
+```
+
+---
+
+##### 💯 امتیازدهی
+
+**کد مرجع:** `signal_generator.py:5284-5297`
+
+**فقط شکست سطوح امتیاز می‌دهند:**
+
+```python
+# 1. شکست مقاومت (Bullish)
+if broken_resistance:
+    level_strength = broken_resistance['strength']  # 0.0 تا 1.0
+    base_score = pattern_scores['broken_resistance']  # 3.0
+    score = base_score * timeframe_weight * level_strength
+    bullish_score += score
+
+    # مثال: 3.0 * 1.0 * 0.85 = +2.55 امتیاز
+
+# 2. شکست حمایت (Bearish)
+if broken_support:
+    level_strength = broken_support['strength']
+    base_score = pattern_scores['broken_support']  # 3.0
+    score = base_score * timeframe_weight * level_strength
+    bearish_score += score
+
+    # مثال: 3.0 * 1.0 * 0.90 = +2.70 امتیاز
+```
+
+**جدول امتیازات:**
+
+| سیگنال | امتیاز پایه | فاکتور قدرت | محدوده نهایی | نوع |
+|--------|------------|-------------|--------------|-----|
+| `broken_resistance` | **3.0** | `level_strength` (0.5-1.0) | **1.5 تا 3.0** | صعودی |
+| `broken_support` | **3.0** | `level_strength` (0.5-1.0) | **1.5 تا 3.0** | نزولی |
+
+**⚠️ نکته مهم:**
+- در کد فعلی **فقط breakout ها** امتیاز می‌دهند
+- قرار گرفتن **نزدیک سطوح** امتیاز ندارد (یک مشکل!)
+- این در بخش پیشنهادات بهبود برطرف می‌شود
+
+---
+
+##### 🎯 کاربردها در سیستم
+
+**1. محاسبه Stop Loss/Take Profit:**
+
+**کد:** `signal_generator.py:4127-4212`
+
+```python
+# Stop Loss از نزدیکترین سطح
+if direction == 'long' and nearest_support:
+    stop_loss = nearest_support * 0.999  # کمی زیر حمایت
+elif direction == 'short' and nearest_resistance:
+    stop_loss = nearest_resistance * 1.001  # کمی بالای مقاومت
+
+# Take Profit تا نزدیکترین مانع
+if direction == 'long' and nearest_resistance:
+    if nearest_resistance > current_price + (risk * min_rr):
+        take_profit = nearest_resistance * 0.999
+elif direction == 'short' and nearest_support:
+    if nearest_support < current_price - (risk * min_rr):
+        take_profit = nearest_support * 1.001
+```
+
+**2. تأیید Reversal Signals:**
+
+**کد:** `signal_generator.py:3754-3772`
+
+```python
+if current_close and broken_resistance:
+    # قیمت تازه مقاومت را شکسته
+    if abs(current_close - broken_resistance) / broken_resistance < 0.01:
+        strength += 0.6  # تقویت سیگنال برگشتی
+        is_reversal = True
+
+if current_close and broken_support:
+    # قیمت تازه حمایت را شکسته
+    if abs(current_close - broken_support) / broken_support < 0.01:
+        strength += 0.6
+        is_reversal = True
+```
+
+**3. Higher Timeframe Zone Analysis:**
+
+**کد:** `signal_generator.py:4363-4377`
+
+```python
+# بررسی zone های HTF (Higher Timeframe)
+for zone in htf_resistance_zones:
+    dist = abs(zone['center'] - current_price)
+    if dist < nearest_resistance_distance:
+        nearest_htf_resistance = zone
+
+# Position relative to HTF zones → تأثیر در تصمیم‌گیری
+```
+
+---
+
+##### 📈 مثال واقعی
+
+**سناریو:** قیمت BTC در 49,950 USDT
+
+```python
+# سطوح شناسایی شده
+resistance_levels = [
+    {'price': 50200, 'strength': 0.85},  # 3 بار تست شده
+    {'price': 51500, 'strength': 0.70}
+]
+support_levels = [
+    {'price': 49800, 'strength': 0.90},  # 4 بار تست شده
+    {'price': 48000, 'strength': 0.65}
+]
+
+# قیمت فعلی: 49,950
+nearest_resistance = {'price': 50200, 'strength': 0.85}  # فاصله: 250 (0.5%)
+nearest_support = {'price': 49800, 'strength': 0.90}     # فاصله: 150 (0.3%)
+
+# قیمت بین دو سطح قوی گیر کرده → Range محتمل
+```
+
+**اگر قیمت به 50,220 برسد:**
+```python
+# Breakout تأیید می‌شود
+broken_resistance = {'price': 50200, 'strength': 0.85}
+score = 3.0 * 1.0 * 0.85 = +2.55 امتیاز صعودی
+
+# + تنظیم SL/TP:
+stop_loss = 50200 * 1.001 = 50,250  # بالای سطح شکسته شده (pullback)
+take_profit = 51500 * 0.999 = 51,450  # نزدیک مقاومت بعدی
+```
+
+---
+
+##### ✅ نکات کلیدی
+
+1. **ATR-Based Clustering:** سطوح بر اساس نوسانات واقعی (ATR) ادغام می‌شوند
+
+2. **Dynamic Quality Filter:** فقط peaks با کیفیت بالا حفظ می‌شوند
+
+3. **Multi-Layer Zones:** سطوح نزدیک → zone قوی‌تر
+
+4. **Breakout Confirmation:** شکست باید در همان کندل رخ دهد (نه کندل‌های قبل)
+
+5. **Integration با SL/TP:** سطوح S/R مستقیماً در مدیریت ریسک استفاده می‌شوند
+
+6. **⚠️ محدودیت فعلی:** قرار گرفتن نزدیک سطوح امتیاز نمی‌دهد (فقط breakout)
 
 ---
 

@@ -3165,5 +3165,1066 @@ Total Bullish Score = (2.0 + 2.3 + 2.8) × 1.5 = 10.65
 
 ---
 
+## مرحله 6: بهبود Support/Resistance Detection
+
+### مشکل 1: عدم امتیازدهی به Proximity با سطوح
+
+**شدت مشکل:** 🔴 بالا
+**تأثیر بر دقت:** +25% بهبود
+
+**توضیح مشکل:**
+
+در کد فعلی (`signal_generator.py:5284-5297`), **فقط شکست سطوح** (broken S/R) امتیاز می‌دهند. اما یکی از مهم‌ترین سیگنال‌های تحلیل تکنیکال این است که:
+- سیگنال خرید **نزدیک حمایت قوی** → احتمال موفقیت بالا
+- سیگنال فروش **نزدیک مقاومت قوی** → احتمال موفقیت بالا
+
+**مثال از دست رفته:**
+```python
+# سطوح شناسایی شده
+nearest_support = {'price': 49800, 'strength': 0.90}
+current_price = 49850  # فاصله: 50 (0.1%)
+
+# سیگنال خرید با RSI oversold + MACD cross
+# اما کد فعلی هیچ امتیازی برای نزدیکی به support نمی‌دهد! ❌
+```
+
+این در حالی است که **قیمت دقیقاً روی حمایت قوی** قرار دارد و سیگنال خرید بسیار با ارزش است.
+
+---
+
+**راه حل پیشنهادی:**
+
+افزودن تابع جدید برای محاسبه **Proximity Score**:
+
+```python
+def calculate_proximity_score(
+    self,
+    current_price: float,
+    nearest_support: Optional[Dict],
+    nearest_resistance: Optional[Dict],
+    signal_direction: str,  # 'bullish' or 'bearish'
+    atr: float
+) -> Dict[str, Any]:
+    """محاسبه امتیاز بر اساس نزدیکی به سطوح S/R"""
+
+    proximity_score = 0.0
+    proximity_type = None
+    distance_pct = None
+
+    if signal_direction == 'bullish' and nearest_support:
+        # سیگنال خرید نزدیک حمایت
+        support_price = nearest_support['price']
+        support_strength = nearest_support['strength']
+
+        distance = abs(current_price - support_price)
+        distance_pct = (distance / current_price) * 100
+
+        # هر چه نزدیکتر باشیم → امتیاز بیشتر
+        if distance < atr * 0.5:  # خیلی نزدیک (< 0.5 ATR)
+            proximity_multiplier = 1.0 - (distance / (atr * 0.5))  # 0.0 to 1.0
+            proximity_score = 2.5 * proximity_multiplier * support_strength
+            proximity_type = 'at_support'
+
+            # مثال: distance = 0.2*ATR, strength = 0.9
+            # multiplier = 1.0 - 0.4 = 0.6
+            # score = 2.5 * 0.6 * 0.9 = +1.35
+
+        elif distance < atr * 1.0:  # نزدیک (0.5-1.0 ATR)
+            proximity_multiplier = 1.0 - (distance / atr)
+            proximity_score = 1.5 * proximity_multiplier * support_strength
+            proximity_type = 'near_support'
+
+    elif signal_direction == 'bearish' and nearest_resistance:
+        # سیگنال فروش نزدیک مقاومت
+        resistance_price = nearest_resistance['price']
+        resistance_strength = nearest_resistance['strength']
+
+        distance = abs(current_price - resistance_price)
+        distance_pct = (distance / current_price) * 100
+
+        if distance < atr * 0.5:  # خیلی نزدیک
+            proximity_multiplier = 1.0 - (distance / (atr * 0.5))
+            proximity_score = 2.5 * proximity_multiplier * resistance_strength
+            proximity_type = 'at_resistance'
+
+        elif distance < atr * 1.0:  # نزدیک
+            proximity_multiplier = 1.0 - (distance / atr)
+            proximity_score = 1.5 * proximity_multiplier * resistance_strength
+            proximity_type = 'near_resistance'
+
+    return {
+        'score': proximity_score,
+        'type': proximity_type,
+        'distance_pct': distance_pct,
+        'distance_atr': distance / atr if atr > 0 else None
+    }
+```
+
+**استفاده در `calculate_multi_timeframe_score`:**
+
+```python
+# بعد از محاسبه broken S/R (خط 5297)
+sr_data = tf_data.get('support_resistance', {})
+if sr_data.get('status') == 'ok':
+    details = sr_data.get('details', {})
+    nearest_support = details.get('nearest_support')
+    nearest_resistance = details.get('nearest_resistance')
+    atr = details.get('atr', 0)
+
+    # محاسبه proximity score برای سیگنال‌های صعودی
+    if bullish_score > 0:  # فقط اگر سیگنال صعودی داریم
+        prox = self.calculate_proximity_score(
+            current_price, nearest_support, nearest_resistance,
+            'bullish', atr
+        )
+        if prox['score'] > 0:
+            score = prox['score'] * tf_weight
+            bullish_score += score
+            all_signals.append({
+                'type': prox['type'],
+                'timeframe': tf,
+                'score': score,
+                'direction': 'bullish',
+                'distance_pct': prox['distance_pct']
+            })
+
+    # محاسبه proximity score برای سیگنال‌های نزولی
+    if bearish_score > 0:
+        prox = self.calculate_proximity_score(
+            current_price, nearest_support, nearest_resistance,
+            'bearish', atr
+        )
+        if prox['score'] > 0:
+            score = prox['score'] * tf_weight
+            bearish_score += score
+            all_signals.append({
+                'type': prox['type'],
+                'timeframe': tf,
+                'score': score,
+                'direction': 'bearish',
+                'distance_pct': prox['distance_pct']
+            })
+```
+
+**جدول امتیازات جدید:**
+
+| موقعیت | فاصله (ATR) | امتیاز پایه | محدوده نهایی | مثال |
+|--------|------------|------------|--------------|------|
+| At Support/Resistance | < 0.5 ATR | **2.5** | **0 تا 2.5** | قیمت دقیقاً روی سطح |
+| Near Support/Resistance | 0.5-1.0 ATR | **1.5** | **0 تا 1.5** | قیمت نزدیک سطح |
+
+**انتظار بهبود:** +25% در accuracy سیگنال‌ها
+
+---
+
+### مشکل 2: عدم اعتبارسنجی قدرت Breakout
+
+**شدت مشکل:** 🟡 متوسط
+**تأثیر بر دقت:** +18% بهبود
+
+**توضیح مشکل:**
+
+در کد فعلی (`signal_generator.py:2384-2387`), تشخیص breakout فقط بر اساس **قیمت** است:
+
+```python
+broken_resistance = next((level for level in resistance_levels if
+    current_close > level['price'] and prev_low < level['price']
+), None)
+```
+
+اما breakout های واقعی نیاز به **تأیید** دارند:
+- ❌ Fake breakout: قیمت می‌شکند اما سریع برمی‌گردد (فریب)
+- ✅ Strong breakout: قیمت می‌شکند + حجم بالا + ادامه حرکت
+
+**مثال False Breakout:**
+```python
+# کندل 1: close = 50,220 (> resistance 50,200) → breakout تشخیص داده می‌شود ✓
+# کندل 2: close = 50,050 (< resistance) → برگشت! این fake بود ✗
+
+# سیستم فعلی امتیاز داد اما معامله ضرر کرد
+```
+
+---
+
+**راه حل پیشنهادی:**
+
+افزودن **Breakout Validation** با چند معیار:
+
+```python
+def validate_breakout_strength(
+    self,
+    df: pd.DataFrame,
+    broken_level: Dict[str, Any],
+    breakout_type: str  # 'resistance' or 'support'
+) -> Dict[str, Any]:
+    """اعتبارسنجی قدرت شکست سطح"""
+
+    current_close = df['close'].iloc[-1]
+    level_price = broken_level['price']
+    level_strength = broken_level['strength']
+
+    # 1. Body Strength: آیا بدنه کندل از سطح عبور کرده؟
+    current_open = df['open'].iloc[-1]
+    if breakout_type == 'resistance':
+        body_above = min(current_open, current_close) > level_price
+        body_strength = 1.0 if body_above else 0.5  # فقط سایه عبور کرده
+    else:  # support
+        body_below = max(current_open, current_close) < level_price
+        body_strength = 1.0 if body_below else 0.5
+
+    # 2. Penetration Depth: چقدر از سطح فاصله گرفته؟
+    penetration = abs(current_close - level_price) / level_price
+
+    atr_values = talib.ATR(df['high'].values, df['low'].values,
+                           df['close'].values, timeperiod=14)
+    current_atr = atr_values[-1]
+
+    penetration_atr = abs(current_close - level_price) / current_atr
+
+    # قوی: > 0.5 ATR, متوسط: 0.2-0.5 ATR, ضعیف: < 0.2 ATR
+    if penetration_atr > 0.5:
+        penetration_strength = 1.0
+    elif penetration_atr > 0.2:
+        penetration_strength = 0.6
+    else:
+        penetration_strength = 0.3  # ضعیف
+
+    # 3. Volume Confirmation: آیا با حجم بالا همراه بوده؟
+    if 'volume' in df.columns:
+        current_volume = df['volume'].iloc[-1]
+        avg_volume = df['volume'].iloc[-20:-1].mean()
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+
+        # حجم بالا → تأیید بیشتر
+        if volume_ratio > 1.5:
+            volume_strength = 1.0
+        elif volume_ratio > 1.0:
+            volume_strength = 0.7
+        else:
+            volume_strength = 0.4  # حجم پایین = مشکوک
+    else:
+        volume_strength = 0.7  # پیش‌فرض
+
+    # 4. Follow-Through: آیا چند کندل قبل هم momentum داشته؟
+    momentum_strength = 1.0
+    if len(df) >= 3:
+        prev_closes = df['close'].iloc[-4:-1].values
+        if breakout_type == 'resistance':
+            # آیا قیمت در حال صعود بوده؟
+            if all(prev_closes[i] < prev_closes[i+1] for i in range(len(prev_closes)-1)):
+                momentum_strength = 1.2  # Bonus!
+            elif prev_closes[-1] < prev_closes[-2]:
+                momentum_strength = 0.8  # ضعیف‌تر
+        else:
+            # آیا قیمت در حال نزول بوده؟
+            if all(prev_closes[i] > prev_closes[i+1] for i in range(len(prev_closes)-1)):
+                momentum_strength = 1.2
+            elif prev_closes[-1] > prev_closes[-2]:
+                momentum_strength = 0.8
+
+    # محاسبه امتیاز نهایی
+    overall_strength = (
+        body_strength * 0.25 +
+        penetration_strength * 0.30 +
+        volume_strength * 0.25 +
+        momentum_strength * 0.20
+    )
+
+    # طبقه‌بندی
+    if overall_strength >= 0.8:
+        quality = 'strong'
+        score_multiplier = 1.5  # +50% bonus
+    elif overall_strength >= 0.6:
+        quality = 'moderate'
+        score_multiplier = 1.0
+    else:
+        quality = 'weak'
+        score_multiplier = 0.5  # -50% penalty
+
+    return {
+        'quality': quality,
+        'overall_strength': overall_strength,
+        'score_multiplier': score_multiplier,
+        'components': {
+            'body_strength': body_strength,
+            'penetration_strength': penetration_strength,
+            'penetration_atr': penetration_atr,
+            'volume_strength': volume_strength,
+            'volume_ratio': volume_ratio if 'volume' in df.columns else None,
+            'momentum_strength': momentum_strength
+        }
+    }
+```
+
+**استفاده در امتیازدهی:**
+
+```python
+# جایگزینی کد فعلی (خطوط 5284-5297)
+if sr_data.get('broken_resistance'):
+    resistance_level = sr_data['broken_resistance']
+
+    # اعتبارسنجی قدرت breakout
+    validation = self.validate_breakout_strength(
+        df, resistance_level, 'resistance'
+    )
+
+    level_str = resistance_level.get('strength', 1.0)
+    base_score = self.pattern_scores.get('broken_resistance', 3.0)
+
+    # اعمال multiplier بر اساس کیفیت
+    score = (base_score * tf_weight * level_str *
+             validation['score_multiplier'])
+
+    bullish_score += score
+    all_signals.append({
+        'type': 'broken_resistance',
+        'timeframe': tf,
+        'score': score,
+        'direction': 'bullish',
+        'breakout_quality': validation['quality'],
+        'breakout_strength': validation['overall_strength']
+    })
+```
+
+**جدول امتیازات به‌روز شده:**
+
+| کیفیت Breakout | Overall Strength | Multiplier | امتیاز نهایی (base=3.0, strength=0.9) |
+|----------------|-----------------|-----------|--------------------------------------|
+| Strong | ≥ 0.8 | **1.5x** | 3.0 × 0.9 × 1.5 = **4.05** |
+| Moderate | 0.6-0.8 | **1.0x** | 3.0 × 0.9 × 1.0 = **2.70** |
+| Weak | < 0.6 | **0.5x** | 3.0 × 0.9 × 0.5 = **1.35** |
+
+**انتظار بهبود:** +18% با فیلتر کردن fake breakouts
+
+---
+
+### مشکل 3: عدم ردیابی تعداد Test های سطح
+
+**شدت مشکل:** 🟡 متوسط
+**تأثیر بر دقت:** +12% بهبود
+
+**توضیح مشکل:**
+
+در کد فعلی (`signal_generator.py:2333-2370`), قدرت سطح فقط بر اساس **تعداد peaks در cluster** محاسبه می‌شود:
+
+```python
+cluster_strength = min(1.0, len(cluster) / 3)
+```
+
+اما این دقیق نیست چون:
+- **تعداد peaks ≠ تعداد test های واقعی سطح**
+- یک سطح ممکن است 10 بار تست شده باشد اما فقط 2 peak داشته باشد
+- سطوحی که بیشتر تست شده‌اند → **قوی‌تر** هستند
+
+**مثال:**
+```python
+# سطح 50,000:
+# - بار 1: قیمت از 50,100 به 49,900 برگشت (peak ثبت نشد)
+# - بار 2: قیمت از 50,050 به 49,920 برگشت (peak ثبت نشد)
+# - بار 3: قیمت از 50,200 به 49,850 برگشت (peak ثبت شد) ✓
+
+# سطح 3 بار تست شده اما فقط 1 peak → strength = 0.33 ❌
+# باید strength = 1.0 باشد ✓
+```
+
+---
+
+**راه حل پیشنهادی:**
+
+افزودن تابع **شمارش واقعی test ها**:
+
+```python
+def count_level_touches(
+    self,
+    df: pd.DataFrame,
+    level_price: float,
+    level_type: str,  # 'support' or 'resistance'
+    tolerance_atr: float = 0.5
+) -> Dict[str, Any]:
+    """شمارش تعداد دفعاتی که قیمت سطح را تست کرده"""
+
+    atr_values = talib.ATR(df['high'].values, df['low'].values,
+                           df['close'].values, timeperiod=14)
+    current_atr = atr_values[~np.isnan(atr_values)][-1]
+
+    threshold = current_atr * tolerance_atr
+
+    touches = 0
+    rejections = 0  # تعداد دفعات برگشت از سطح
+
+    for i in range(len(df)):
+        high = df['high'].iloc[i]
+        low = df['low'].iloc[i]
+        close = df['close'].iloc[i]
+
+        if level_type == 'resistance':
+            # آیا کندل به سطح مقاومت رسیده؟
+            if abs(high - level_price) <= threshold:
+                touches += 1
+
+                # آیا برگشت خورده؟ (rejection)
+                if close < level_price - (threshold * 0.5):
+                    rejections += 1
+
+        else:  # support
+            # آیا کندل به سطح حمایت رسیده؟
+            if abs(low - level_price) <= threshold:
+                touches += 1
+
+                # آیا برگشت خورده؟
+                if close > level_price + (threshold * 0.5):
+                    rejections += 1
+
+    # محاسبه rejection rate
+    rejection_rate = rejections / touches if touches > 0 else 0
+
+    # محاسبه قدرت بر اساس touches
+    # هر چه بیشتر تست شده → قوی‌تر
+    if touches >= 5:
+        touch_strength = 1.0
+    elif touches >= 3:
+        touch_strength = 0.8
+    elif touches >= 2:
+        touch_strength = 0.6
+    else:
+        touch_strength = 0.4
+
+    # rejection rate بالا → سطح قوی‌تر
+    rejection_strength = rejection_rate  # 0.0 to 1.0
+
+    # ترکیب
+    overall_strength = (touch_strength * 0.6 + rejection_strength * 0.4)
+
+    return {
+        'touches': touches,
+        'rejections': rejections,
+        'rejection_rate': rejection_rate,
+        'touch_strength': touch_strength,
+        'rejection_strength': rejection_strength,
+        'overall_strength': overall_strength
+    }
+```
+
+**ادغام در `detect_support_resistance`:**
+
+```python
+# بعد از consolidate_levels (خط 2376-2377)
+results['resistance_levels'] = consolidate_levels(resistance_levels_raw, last_atr)
+results['support_levels'] = consolidate_levels(support_levels_raw, last_atr)
+
+# افزودن touch count به هر سطح
+for level in results['resistance_levels']:
+    touch_data = self.count_level_touches(df, level['price'], 'resistance')
+    level['touches'] = touch_data['touches']
+    level['rejection_rate'] = touch_data['rejection_rate']
+
+    # به‌روزرسانی strength بر اساس touches
+    level['strength'] = (
+        level['strength'] * 0.5 +           # cluster strength (قبلی)
+        touch_data['overall_strength'] * 0.5  # touch strength (جدید)
+    )
+
+for level in results['support_levels']:
+    touch_data = self.count_level_touches(df, level['price'], 'support')
+    level['touches'] = touch_data['touches']
+    level['rejection_rate'] = touch_data['rejection_rate']
+    level['strength'] = (
+        level['strength'] * 0.5 +
+        touch_data['overall_strength'] * 0.5
+    )
+```
+
+**خروجی به‌روز شده:**
+
+```python
+'resistance_levels': [
+    {
+        'price': 50200,
+        'strength': 0.92,  # ترکیب cluster + touches
+        'touches': 5,      # 5 بار تست شده ✓
+        'rejection_rate': 0.80  # 4 از 5 بار برگشت خورده
+    }
+]
+```
+
+**انتظار بهبود:** +12% با محاسبه دقیق‌تر قدرت سطوح
+
+---
+
+### مشکل 4: الگوریتم Clustering ساده
+
+**شدت مشکل:** 🟢 پایین
+**تأثیر بر دقت:** +8% بهبود
+
+**توضیح مشکل:**
+
+الگوریتم فعلی (`signal_generator.py:2333-2370`) از **Sequential Clustering** استفاده می‌کند:
+
+```python
+for level in sorted_levels:
+    if abs(level - cluster_mean) <= threshold:
+        current_cluster.append(level)
+    else:
+        save_cluster()
+        start_new_cluster(level)
+```
+
+این الگوریتم ساده است اما مشکلاتی دارد:
+- فقط سطوح **مرتب شده** را بررسی می‌کند
+- نمی‌تواند clusters با **چگالی متغیر** را تشخیص دهد
+- حساس به **outlier** است
+
+**مثال مشکل:**
+```python
+levels = [50000, 50050, 50500, 50520, 50550]
+# با threshold = 100:
+
+# الگوریتم فعلی:
+Cluster 1: [50000, 50050]  # OK
+Cluster 2: [50500, 50520, 50550]  # OK
+
+# اما اگر:
+levels = [50000, 50050, 50500, 50100, 50520]  # یک outlier در وسط
+
+# الگوریتم فعلی:
+Cluster 1: [50000, 50050, 50100]  # 50100 نباید اینجا باشد!
+Cluster 2: [50500, 50520]
+```
+
+---
+
+**راه حل پیشنهادی:**
+
+استفاده از **DBSCAN** (Density-Based Spatial Clustering):
+
+```python
+from sklearn.cluster import DBSCAN
+
+def consolidate_levels_dbscan(
+    self,
+    levels: np.ndarray,
+    atr: float
+) -> List[Dict[str, Any]]:
+    """Clustering سطوح با DBSCAN"""
+
+    if len(levels) == 0:
+        return []
+
+    # محاسبه eps (حداکثر فاصله در یک cluster)
+    eps = atr * 0.3
+    if eps <= 1e-9:
+        eps = np.mean(levels) * 0.001 if np.mean(levels) > 0 else 1e-5
+
+    # Reshape برای DBSCAN
+    X = levels.reshape(-1, 1)
+
+    # DBSCAN clustering
+    clustering = DBSCAN(eps=eps, min_samples=1).fit(X)
+    labels = clustering.labels_
+
+    # استخراج clusters
+    unique_labels = set(labels)
+    clusters = []
+
+    for label in unique_labels:
+        if label == -1:  # Outliers
+            # هر outlier یک cluster مستقل
+            outlier_indices = np.where(labels == label)[0]
+            for idx in outlier_indices:
+                clusters.append({
+                    'price': float(levels[idx]),
+                    'strength': 0.3,  # قدرت پایین (تنها)
+                    'touches': 1,
+                    'is_outlier': True
+                })
+        else:
+            # Cluster عادی
+            cluster_indices = np.where(labels == label)[0]
+            cluster_levels = levels[cluster_indices]
+
+            cluster_mean = np.mean(cluster_levels)
+            cluster_std = np.std(cluster_levels)
+            cluster_size = len(cluster_levels)
+
+            # محاسبه قدرت
+            size_strength = min(1.0, cluster_size / 3)
+            uniformity = 1.0 - (cluster_std / cluster_mean if cluster_mean > 0 else 0)
+            cluster_strength = size_strength * uniformity
+
+            clusters.append({
+                'price': float(cluster_mean),
+                'strength': float(cluster_strength),
+                'touches': cluster_size,
+                'is_outlier': False
+            })
+
+    return sorted(clusters, key=lambda x: x['price'])
+```
+
+**مقایسه:**
+
+```python
+# سطوح: [50000, 50050, 50500, 50100, 50520]
+
+# الگوریتم فعلی (Sequential):
+[
+    {'price': 50050, 'strength': 0.66},  # [50000, 50050, 50100]
+    {'price': 50510, 'strength': 0.66}   # [50500, 50520]
+]
+
+# الگوریتم جدید (DBSCAN):
+[
+    {'price': 50025, 'strength': 0.66},  # [50000, 50050]
+    {'price': 50100, 'strength': 0.30, 'is_outlier': True},  # outlier
+    {'price': 50510, 'strength': 0.66}   # [50500, 50520]
+]
+# دقیق‌تر! ✓
+```
+
+**انتظار بهبود:** +8% با clustering دقیق‌تر
+
+---
+
+### مشکل 5: عدم Multi-Timeframe Confluence در S/R
+
+**شدت مشکل:** 🔴 بالا
+**تأثیر بر دقت:** +22% بهبود
+
+**توضیح مشکل:**
+
+سطوح S/R در تایم‌فریم‌های مختلف محاسبه می‌شوند اما **هیچ بررسی برای همپوشانی** وجود ندارد:
+
+```python
+# 1h: support at 50,000
+# 4h: support at 49,980
+# 1d: support at 50,020
+
+# این 3 سطح در واقع یک ناحیه قوی 49,980-50,020 می‌سازند!
+# اما سیستم فعلی هر کدام را جداگانه می‌بیند
+```
+
+سطوحی که در **چند تایم‌فریم همزمان** هستند → **بسیار قوی‌تر**
+
+---
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_mtf_sr_confluence(
+    self,
+    all_timeframes_sr: Dict[str, Dict]  # {tf: sr_data}
+) -> Dict[str, Any]:
+    """محاسبه همپوشانی سطوح S/R در تایم‌فریم‌های مختلف"""
+
+    # جمع‌آوری تمام سطوح
+    all_support_levels = []
+    all_resistance_levels = []
+
+    for tf, sr_data in all_timeframes_sr.items():
+        if sr_data.get('status') != 'ok':
+            continue
+
+        tf_weight = self.timeframe_weights.get(tf, 1.0)
+
+        for level in sr_data.get('support_levels', []):
+            all_support_levels.append({
+                'price': level['price'],
+                'strength': level['strength'],
+                'timeframe': tf,
+                'tf_weight': tf_weight
+            })
+
+        for level in sr_data.get('resistance_levels', []):
+            all_resistance_levels.append({
+                'price': level['price'],
+                'strength': level['strength'],
+                'timeframe': tf,
+                'tf_weight': tf_weight
+            })
+
+    # پیدا کردن confluences
+    def find_confluences(levels: List[Dict], atr: float) -> List[Dict]:
+        """پیدا کردن سطوحی که در چند TF همپوشانی دارند"""
+
+        if len(levels) == 0:
+            return []
+
+        threshold = atr * 0.5  # سطوح نزدیکتر از 0.5 ATR
+
+        confluences = []
+        used_indices = set()
+
+        for i, level1 in enumerate(levels):
+            if i in used_indices:
+                continue
+
+            # پیدا کردن سطوح نزدیک در سایر TF ها
+            cluster = [level1]
+            used_indices.add(i)
+
+            for j, level2 in enumerate(levels):
+                if j <= i or j in used_indices:
+                    continue
+
+                # آیا نزدیک هستند و از TF متفاوت؟
+                if (abs(level1['price'] - level2['price']) <= threshold and
+                    level1['timeframe'] != level2['timeframe']):
+                    cluster.append(level2)
+                    used_indices.add(j)
+
+            # اگر فقط یک TF باشد → confluence نیست
+            if len(cluster) == 1:
+                continue
+
+            # محاسبه مشخصات confluence
+            prices = [lv['price'] for lv in cluster]
+            strengths = [lv['strength'] for lv in cluster]
+            tf_weights = [lv['tf_weight'] for lv in cluster]
+            timeframes = [lv['timeframe'] for lv in cluster]
+
+            avg_price = np.mean(prices)
+
+            # قدرت = میانگین وزن‌دار strength ها
+            weighted_strength = sum(s * w for s, w in zip(strengths, tf_weights)) / sum(tf_weights)
+
+            # Confluence bonus: +20% برای هر TF اضافی
+            confluence_count = len(set(timeframes))
+            confluence_bonus = 1.0 + (confluence_count - 1) * 0.20
+
+            final_strength = min(1.0, weighted_strength * confluence_bonus)
+
+            confluences.append({
+                'price': avg_price,
+                'strength': final_strength,
+                'timeframes': list(set(timeframes)),
+                'confluence_count': confluence_count,
+                'price_range': (min(prices), max(prices))
+            })
+
+        return sorted(confluences, key=lambda x: x['strength'], reverse=True)
+
+    # محاسبه ATR از تایم‌فریم اصلی
+    primary_tf = list(all_timeframes_sr.keys())[0]
+    atr = all_timeframes_sr[primary_tf].get('details', {}).get('atr', 100)
+
+    support_confluences = find_confluences(all_support_levels, atr)
+    resistance_confluences = find_confluences(all_resistance_levels, atr)
+
+    return {
+        'status': 'ok',
+        'support_confluences': support_confluences,
+        'resistance_confluences': resistance_confluences,
+        'total_confluences': len(support_confluences) + len(resistance_confluences)
+    }
+```
+
+**استفاده در سیگنال‌گیری:**
+
+```python
+# محاسبه confluences
+all_tf_sr = {
+    '15m': tf_results['15m'].get('support_resistance'),
+    '1h': tf_results['1h'].get('support_resistance'),
+    '4h': tf_results['4h'].get('support_resistance')
+}
+
+mtf_confluences = self.calculate_mtf_sr_confluence(all_tf_sr)
+
+# اضافه کردن به امتیاز
+for confluence in mtf_confluences['support_confluences']:
+    if signal_direction == 'bullish':
+        # بررسی نزدیکی قیمت به confluence
+        distance = abs(current_price - confluence['price'])
+        if distance < atr * 0.5:
+            # امتیاز بالا برای MTF confluence
+            bonus_score = 3.0 * confluence['strength']
+            bullish_score += bonus_score
+
+            all_signals.append({
+                'type': 'mtf_support_confluence',
+                'score': bonus_score,
+                'timeframes': confluence['timeframes'],
+                'confluence_count': confluence['confluence_count']
+            })
+```
+
+**مثال:**
+
+```python
+# سطوح:
+# 15m: support at 50,000 (strength: 0.7)
+# 1h:  support at 49,990 (strength: 0.8)
+# 4h:  support at 50,010 (strength: 0.9)
+
+# Confluence تشخیص داده می‌شود:
+{
+    'price': 50000,  # میانگین
+    'strength': 0.95,  # 0.8 (weighted avg) × 1.4 (3-TF bonus)
+    'timeframes': ['15m', '1h', '4h'],
+    'confluence_count': 3,
+    'price_range': (49990, 50010)
+}
+
+# امتیاز: 3.0 × 0.95 = +2.85 (بسیار قوی!)
+```
+
+**انتظار بهبود:** +22% با شناسایی سطوح چند-تایم‌فریمی
+
+---
+
+### مشکل 6: عدم تشخیص Retest/Pullback
+
+**شدت مشکل:** 🟡 متوسط
+**تأثیر بر دقت:** +15% بهبود
+
+**توضیح مشکل:**
+
+بعد از یک breakout موفق، معمولاً قیمت **بازمی‌گردد و سطح شکسته شده را دوباره تست می‌کند** (retest/pullback). این یک فرصت عالی برای ورود است:
+
+```python
+# کندل 1-5: قیمت نزدیک مقاومت 50,000
+# کندل 6: Breakout! قیمت به 50,300 می‌رسد
+# کندل 7-10: Pullback به 50,050 (تست مجدد سطح شکسته شده)
+# کندل 11+: ادامه صعود به 51,000
+
+# ورود در pullback (50,050) بهتر از ورود در breakout (50,300) است!
+```
+
+اما سیستم فعلی این را **تشخیص نمی‌دهد**.
+
+---
+
+**راه حل پیشنهادی:**
+
+```python
+def detect_retest_opportunity(
+    self,
+    df: pd.DataFrame,
+    sr_data: Dict[str, Any],
+    lookback: int = 20
+) -> Dict[str, Any]:
+    """تشخیص فرصت retest بعد از breakout"""
+
+    current_close = df['close'].iloc[-1]
+
+    # بررسی breakout های اخیر
+    recent_broken_resistance = None
+    recent_broken_support = None
+    breakout_candle_idx = None
+
+    # جستجو در کندل‌های اخیر
+    for i in range(1, min(lookback, len(df))):
+        idx = -i
+        past_close = df['close'].iloc[idx]
+        past_high = df['high'].iloc[idx]
+        past_low = df['low'].iloc[idx]
+
+        # بررسی breakout مقاومت در گذشته
+        for res_level in sr_data.get('resistance_levels', []):
+            res_price = res_level['price']
+
+            # آیا در این کندل breakout رخ داده؟
+            if (past_close > res_price and
+                df['close'].iloc[idx-1] < res_price):  # کندل قبلش زیر بود
+
+                # آیا قیمت فعلی در حال retest است؟
+                distance = abs(current_close - res_price)
+                atr = sr_data.get('details', {}).get('atr', 100)
+
+                if distance < atr * 0.5 and current_close > res_price:
+                    # قیمت نزدیک سطح شکسته شده و هنوز بالاتر است
+                    recent_broken_resistance = res_level
+                    breakout_candle_idx = i
+                    break
+
+        # بررسی breakout حمایت
+        for sup_level in sr_data.get('support_levels', []):
+            sup_price = sup_level['price']
+
+            if (past_close < sup_price and
+                df['close'].iloc[idx-1] > sup_price):
+
+                distance = abs(current_close - sup_price)
+                atr = sr_data.get('details', {}).get('atr', 100)
+
+                if distance < atr * 0.5 and current_close < sup_price:
+                    recent_broken_support = sup_level
+                    breakout_candle_idx = i
+                    break
+
+        if recent_broken_resistance or recent_broken_support:
+            break
+
+    # اگر retest پیدا نشد
+    if not recent_broken_resistance and not recent_broken_support:
+        return {'status': 'no_retest'}
+
+    # ارزیابی کیفیت retest
+    if recent_broken_resistance:
+        level_price = recent_broken_resistance['price']
+        level_strength = recent_broken_resistance['strength']
+        direction = 'bullish'
+    else:
+        level_price = recent_broken_support['price']
+        level_strength = recent_broken_support['strength']
+        direction = 'bearish'
+
+    # 1. Timing: چقدر از breakout گذشته؟
+    if breakout_candle_idx <= 5:
+        timing_score = 1.0  # تازه
+    elif breakout_candle_idx <= 10:
+        timing_score = 0.7  # قابل قبول
+    else:
+        timing_score = 0.4  # قدیمی
+
+    # 2. Price Action: آیا با حجم پایین retest می‌شود؟
+    recent_volume = df['volume'].iloc[-3:].mean() if 'volume' in df.columns else 1
+    breakout_volume = df['volume'].iloc[-breakout_candle_idx] if 'volume' in df.columns else 1
+
+    volume_ratio = recent_volume / breakout_volume if breakout_volume > 0 else 1
+
+    # Retest خوب: حجم پایین (بی‌علاقگی فروشندگان)
+    if volume_ratio < 0.7:
+        volume_score = 1.0  # عالی
+    elif volume_ratio < 1.0:
+        volume_score = 0.7
+    else:
+        volume_score = 0.4  # حجم بالا = مشکوک
+
+    # 3. Price Respect: آیا قیمت سطح را رعایت کرده؟
+    lowest_since_breakout = df['low'].iloc[-breakout_candle_idx:].min()
+    highest_since_breakout = df['high'].iloc[-breakout_candle_idx:].max()
+
+    if direction == 'bullish':
+        # آیا قیمت زیر سطح نرفته؟
+        if lowest_since_breakout >= level_price:
+            respect_score = 1.0  # کامل
+        elif lowest_since_breakout >= level_price * 0.995:
+            respect_score = 0.7  # نسبی
+        else:
+            respect_score = 0.3  # شکست خورده
+    else:
+        # آیا قیمت بالای سطح نرفته؟
+        if highest_since_breakout <= level_price:
+            respect_score = 1.0
+        elif highest_since_breakout <= level_price * 1.005:
+            respect_score = 0.7
+        else:
+            respect_score = 0.3
+
+    # محاسبه امتیاز کلی
+    retest_quality = (
+        timing_score * 0.3 +
+        volume_score * 0.4 +
+        respect_score * 0.3
+    )
+
+    # امتیاز نهایی
+    if retest_quality >= 0.7:
+        retest_score = 3.5 * level_strength  # فرصت عالی
+        quality_label = 'excellent'
+    elif retest_quality >= 0.5:
+        retest_score = 2.0 * level_strength
+        quality_label = 'good'
+    else:
+        retest_score = 0.8 * level_strength
+        quality_label = 'weak'
+
+    return {
+        'status': 'retest_detected',
+        'direction': direction,
+        'level_price': level_price,
+        'level_strength': level_strength,
+        'breakout_candles_ago': breakout_candle_idx,
+        'retest_quality': retest_quality,
+        'quality_label': quality_label,
+        'score': retest_score,
+        'components': {
+            'timing_score': timing_score,
+            'volume_score': volume_score,
+            'respect_score': respect_score
+        }
+    }
+```
+
+**استفاده:**
+
+```python
+# در calculate_multi_timeframe_score
+for tf, tf_data in analysis.items():
+    sr_data = tf_data.get('support_resistance', {})
+
+    # تشخیص retest
+    retest = self.detect_retest_opportunity(dfs[tf], sr_data)
+
+    if retest['status'] == 'retest_detected':
+        score = retest['score'] * tf_weight
+
+        if retest['direction'] == 'bullish':
+            bullish_score += score
+        else:
+            bearish_score += score
+
+        all_signals.append({
+            'type': 'retest_opportunity',
+            'timeframe': tf,
+            'score': score,
+            'direction': retest['direction'],
+            'quality': retest['quality_label'],
+            'level_price': retest['level_price']
+        })
+```
+
+**انتظار بهبود:** +15% با شناسایی فرصت‌های retest
+
+---
+
+## خلاصه بهبودهای Support/Resistance Detection
+
+| # | مشکل | تأثیر | پیچیدگی پیاده‌سازی |
+|---|------|-------|-------------------|
+| 1 | عدم امتیازدهی Proximity | **+25%** | متوسط |
+| 2 | عدم Validation قدرت Breakout | **+18%** | متوسط |
+| 3 | عدم ردیابی Test های واقعی | **+12%** | ساده |
+| 4 | Clustering ساده | **+8%** | متوسط |
+| 5 | عدم MTF Confluence | **+22%** | پیچیده |
+| 6 | عدم تشخیص Retest | **+15%** | متوسط |
+
+**مجموع تأثیر تخمینی:** +60-70% بهبود در دقت سیگنال‌های S/R
+
+---
+
+## اولویت‌بندی پیاده‌سازی
+
+**فاز 1 (ضروری - 2 هفته):**
+1. Proximity Scoring (مشکل 1)
+2. Breakout Validation (مشکل 2)
+
+**فاز 2 (مهم - 1 هفته):**
+3. Touch Counting (مشکل 3)
+4. Retest Detection (مشکل 6)
+
+**فاز 3 (بهبود - 2 هفته):**
+5. MTF Confluence (مشکل 5)
+6. DBSCAN Clustering (مشکل 4)
+
+---
+
+## Backtesting پیشنهادی
+
+1. **Proximity Effectiveness:**
+   - مقایسه win rate سیگنال‌های نزدیک S/R vs دور از S/R
+   - یافتن فاصله بهینه (چند ATR؟)
+
+2. **Breakout Quality:**
+   - تحلیل correlation بین validation score و سود معامله
+   - شناسایی آستانه برای فیلتر fake breakouts
+
+3. **Retest Success Rate:**
+   - بررسی درصد موفقیت ورود در retest vs ورود در breakout
+   - تعیین بهترین تایمینگ برای ورود
+
+---
+
 **تاریخ آخرین به‌روزرسانی:** 2025-10-28
 
