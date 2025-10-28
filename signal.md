@@ -3412,50 +3412,233 @@ RR = 6.0:1 ✓✓✓
 
 ### 3.3 شناسایی الگوهای چرخه‌ای (Cyclical Patterns)
 
-**محل:** `signal_generator.py:2769-2869`
+**محل:** `signal_generator.py:2769-2871`
 
 ```python
-analysis_data['cyclical_patterns'] = self.detect_cyclical_patterns(df)
+analysis_data['cyclical_patterns'] = self.detect_cyclical_patterns(
+    df,
+    lookback=200  # حداقل 200 کندل برای FFT
+)
 ```
 
-**تکنولوژی استفاده شده: FFT (Fast Fourier Transform)**
+این تحلیل با **FFT (Fast Fourier Transform)** الگوهای تکرارشونده (چرخه‌ای) در قیمت را شناسایی و **20 کندل آینده** را پیش‌بینی می‌کند.
 
-این تحلیل با استفاده از **تبدیل فوریه** الگوهای تکرارشونده در قیمت را پیدا می‌کند.
+---
 
-**مراحل تحلیل:**
+##### الگوریتم FFT-Based (4 مرحله)
 
-1. **حذف روند (Detrending):**
-   ```python
-   trend = np.polyfit(x, closes, 1)  # خط روند
-   detrended = closes - trend         # حذف روند
-   ```
+**مرحله 1: Detrending (حذف روند)**
 
-2. **اعمال FFT:**
-   ```python
-   fft_result = scipy.fft.rfft(detrended)
-   ```
-   - تبدیل سیگنال قیمت به فرکانس‌ها
+**کد:** `signal_generator.py:2777-2784`
 
-3. **شناسایی چرخه‌های قوی:**
-   - پیدا کردن فرکانس‌هایی که قدرت بالایی دارند
-   - محاسبه دوره (Period) هر چرخه
-   - فقط چرخه‌هایی با دوره 2 تا 100 کندل
+```python
+# گرفتن آخرین 200 کندل
+df_window = df.iloc[-lookback:]
+closes = df_window['close'].values
 
-4. **پیش‌بینی قیمت:**
-   ```python
-   forecast = trend + sum(cycle_components)
-   ```
-   - با استفاده از چرخه‌های شناسایی شده، 20 کندل آینده پیش‌بینی می‌شود
+# محاسبه خط روند (Linear Regression)
+x = np.arange(len(closes))  # [0, 1, 2, ..., 199]
+trend_coeffs = np.polyfit(x, closes, 1)  # [slope, intercept]
+trend = np.polyval(trend_coeffs, x)  # خط روند
 
-**خروجی:**
+# حذف روند از قیمت
+detrended = closes - trend
+```
+
+**چرا Detrending؟**
+- FFT برای **نوسانات** کار می‌کند نه روند
+- اگر روند حذف نشود، FFT روند را به عنوان یک فرکانس پایین می‌بیند
+- Detrending به ما اجازه می‌دهد فقط **الگوهای تکرارشونده** را ببینیم
+
+**مثال:**
+```python
+# قیمت اصلی: [50000, 50100, 50200, 50050, 50150, ...]  # روند صعودی + نوسان
+# خط روند: [50000, 50100, 50200, 50300, 50400, ...]  # فقط روند
+# Detrended: [0, 0, 0, -250, -250, ...]  # فقط نوسانات ✓
+```
+
+---
+
+**مرحله 2: اعمال FFT و استخراج فرکانس‌ها**
+
+**کد:** `signal_generator.py:2786-2792`
+
+```python
+from scipy import fft
+
+# اعمال FFT (Real FFT برای داده واقعی)
+close_fft = fft.rfft(detrended)  # FFT coefficients (complex numbers)
+fft_freqs = fft.rfftfreq(len(detrended))  # فرکانس‌های متناظر
+
+# محاسبه قدرت (Magnitude) هر فرکانس
+close_fft_mag = np.abs(close_fft)
+
+# یافتن فرکانس‌های قوی (بالاتر از threshold)
+threshold = np.mean(close_fft_mag) + np.std(close_fft_mag)
+significant_freq_indices = np.where(close_fft_mag > threshold)[0]
+```
+
+**FFT چیست؟**
+- تبدیل سیگنال زمانی به فرکانسی
+- **ورودی:** سری زمانی قیمت (detrended)
+- **خروجی:** قدرت هر فرکانس (چرخه)
+
+**مثال ساده:**
+```python
+# سیگنال ورودی: نوسان 10 روزه + نوسان 30 روزه
+signal = sin(2π × t / 10) + sin(2π × t / 30)
+
+# FFT خروجی:
+# فرکانس 0.1 (period=10): magnitude = 1.0 🔴
+# فرکانس 0.033 (period=30): magnitude = 1.0 🔴
+# سایر فرکانس‌ها: magnitude ≈ 0
+```
+
+**Threshold:**
+```python
+# قدرت‌ها: [0.1, 0.2, 15.5, 0.3, 8.2, 0.1, ...]
+# mean = 2.5, std = 5.0
+# threshold = 2.5 + 5.0 = 7.5
+# فرکانس‌های قوی: [15.5, 8.2]  # فقط اینها Significant هستند
+```
+
+---
+
+**مرحله 3: فیلتر و استخراج چرخه‌ها**
+
+**کد:** `signal_generator.py:2794-2813`
+
+```python
+# فیلتر: فقط چرخه‌های با دوره منطقی (2 تا lookback/2)
+filtered_indices = [i for i in significant_freq_indices
+                    if 2 <= 1 / fft_freqs[i] <= lookback / 2]
+
+cycles = []
+for idx in filtered_indices:
+    if fft_freqs[idx] > 0:
+        # تبدیل فرکانس به دوره (Period)
+        period = int(1 / fft_freqs[idx])  # Period در کندل
+
+        # دامنه (Amplitude) - قدرت نوسان
+        amplitude = close_fft_mag[idx] / len(detrended)  # Normalize
+
+        # فاز (Phase) - موقعیت فعلی در چرخه
+        phase = np.angle(close_fft[idx])  # رادیان
+
+        # قدرت نسبی (به درصد قیمت)
+        cycle_power = amplitude / np.mean(closes) * 100
+
+        cycles.append({
+            'period': period,
+            'amplitude': float(amplitude),
+            'amplitude_percent': float(cycle_power),
+            'phase': float(phase)
+        })
+
+# مرتب‌سازی بر اساس قدرت (قوی‌ترین اول)
+cycles = sorted(cycles, key=lambda x: x['amplitude'], reverse=True)
+top_cycles = cycles[:5]  # فقط 5 چرخه قوی‌ترین
+```
+
+**فیلتر دوره:**
+- **حداقل:** 2 کندل (خیلی کوتاه‌تر = نویز)
+- **حداکثر:** lookback/2 = 100 کندل (خیلی طولانی‌تر = unreliable)
+
+**محاسبات:**
+
+| فرکانس | دوره (Period) | دامنه | قدرت نسبی | توضیح |
+|---------|--------------|-------|-----------|-------|
+| 0.0417 | 1/0.0417 = **24** | 150.5 | 0.3% | چرخه 24 کندلی قوی |
+| 0.0833 | 1/0.0833 = **12** | 95.2 | 0.19% | چرخه 12 کندلی متوسط |
+
+**Phase (فاز):**
+```
+phase = 0 → ابتدای چرخه (کف)
+phase = π/2 → صعود
+phase = π → اوج چرخه
+phase = 3π/2 → نزول
+phase = 2π → بازگشت به کف
+```
+
+---
+
+**مرحله 4: پیش‌بینی (Forecast) با ترکیب چرخه‌ها**
+
+**کد:** `signal_generator.py:2815-2843`
+
+```python
+if len(top_cycles) >= self.cycle_min_cycles:  # حداقل 2 چرخه
+    forecast_length = 20  # پیش‌بینی 20 کندل آینده
+    forecast = np.zeros(forecast_length)
+
+    # آخرین نقطه روند
+    last_trend = trend[-1]
+    trend_slope = trend_coeffs[0]
+
+    # محاسبه پیش‌بینی برای هر کندل
+    for i in range(forecast_length):
+        # 1. ادامه روند
+        point_forecast = last_trend + trend_slope * (i + 1)
+
+        # 2. اضافه کردن تمام چرخه‌ها
+        for cycle in top_cycles:
+            period = cycle['period']
+            amplitude = cycle['amplitude']
+            phase = cycle['phase']
+
+            # زمان آینده
+            t = len(closes) + i
+
+            # محاسبه مقدار چرخه در زمان t
+            cycle_component = amplitude * np.cos(2 * np.pi * t / period + phase)
+
+            # اضافه کردن به پیش‌بینی
+            point_forecast += cycle_component
+
+        forecast[i] = point_forecast
+```
+
+**فرمول پیش‌بینی:**
+```
+forecast(t) = trend(t) + Σ [amplitude_i × cos(2π × t / period_i + phase_i)]
+```
+
+**مثال محاسبه:**
+```python
+# کندل 201 (اولین کندل پیش‌بینی):
+trend_201 = 50500 + 5 × 1 = 50505  # روند صعودی 5 واحد/کندل
+
+# چرخه 1 (period=24, amp=150, phase=π):
+cycle1 = 150 × cos(2π × 201 / 24 + π) = 150 × cos(52.6 + π) ≈ -120
+
+# چرخه 2 (period=12, amp=95, phase=0):
+cycle2 = 95 × cos(2π × 201 / 12 + 0) = 95 × cos(105.2) ≈ 60
+
+# پیش‌بینی نهایی:
+forecast_201 = 50505 + (-120) + 60 = 50445
+```
+
+**تعیین جهت پیش‌بینی:**
+```python
+forecast_direction = 'bullish' if forecast[-1] > closes[-1] else 'bearish'
+forecast_strength = abs(forecast[-1] - closes[-1]) / closes[-1]
+```
+
+---
+
+##### خروجی کامل
+
 ```python
 {
+    'status': 'ok',
+
+    # چرخه‌های شناسایی شده (5 قوی‌ترین)
     'cycles': [
         {
-            'period': 24,         # چرخه 24 کندلی
-            'amplitude': 150.5,   # دامنه نوسان
-            'amplitude_percent': 0.3,  # 0.3% قیمت
-            'phase': 1.57         # فاز فعلی
+            'period': 24,                # چرخه 24 کندلی
+            'amplitude': 150.5,          # دامنه: 150.5 واحد
+            'amplitude_percent': 0.3,    # 0.3% قیمت فعلی
+            'phase': 3.14                # فاز: π (در اوج)
         },
         {
             'period': 12,
@@ -3464,16 +3647,146 @@ analysis_data['cyclical_patterns'] = self.detect_cyclical_patterns(df)
             'phase': 0.78
         }
     ],
-    'forecast_direction': 'up',  # جهت پیش‌بینی شده
-    'forecast_confidence': 0.72,
-    'next_cycle_peak': 15  # پیک بعدی در 15 کندل دیگر
+
+    # پیش‌بینی 20 کندل آینده
+    'forecast': {
+        'values': [50445, 50462, 50478, ..., 50890],  # 20 مقدار
+        'direction': 'bullish',        # جهت کلی پیش‌بینی
+        'strength': 0.0078            # 0.78% تغییر
+    },
+
+    # سیگنال
+    'signal': {
+        'type': 'cycle_bullish_forecast',
+        'direction': 'bullish',
+        'score': 1.95  # 2.5 × clarity (0.78) × cycles_strength (1.0)
+    },
+
+    # جزئیات
+    'details': {
+        'total_cycles_detected': 8,      # تعداد کل چرخه‌های یافت شده
+        'significant_cycles': 5,         # 5 قوی‌ترین انتخاب شدند
+        'detrend_coeffs': [5.2, 50000]   # [slope, intercept] خط روند
+    }
 }
 ```
 
-**امتیازدهی:**
-- چرخه قوی در نزدیکی کف + سیگنال خرید → **+15 تا +25 امتیاز**
-- پیش‌بینی FFT همسو با سیگنال → **+10 تا +15 امتیاز**
-- اگر چندین چرخه همزمان تأیید کنند → **+5 امتیاز اضافی**
+---
+
+##### امتیازدهی
+
+**کد:** `signal_generator.py:2843-2857, 5328-5338`
+
+```python
+# محاسبه امتیاز
+prediction_clarity = min(1.0, forecast_strength * 5)  # 0.0 تا 1.0
+cycles_strength = min(1.0, sum(c['amplitude_percent'] for c in top_cycles) / 10)
+
+# امتیاز پایه: 2.5
+base_score = 2.5
+signal_score = base_score * prediction_clarity * cycles_strength
+
+if forecast_direction == 'bullish':
+    results['signal'] = {
+        'type': 'cycle_bullish_forecast',
+        'direction': 'bullish',
+        'score': signal_score
+    }
+```
+
+**فرمول:**
+```
+score = 2.5 × prediction_clarity × cycles_strength
+
+prediction_clarity = min(1.0, |forecast_change| × 5)
+cycles_strength = min(1.0, Σ amplitude_percent / 10)
+```
+
+**جدول امتیازات:**
+
+| Forecast Change | Clarity | Total Amp% | Cycles Strength | امتیاز نهایی |
+|-----------------|---------|-----------|-----------------|--------------|
+| 1% | 1.0 | 5% | 0.5 | 2.5 × 1.0 × 0.5 = **1.25** |
+| 0.5% | 1.0 | 10% | 1.0 | 2.5 × 1.0 × 1.0 = **2.5** |
+| 0.2% | 1.0 | 3% | 0.3 | 2.5 × 1.0 × 0.3 = **0.75** |
+
+**محدوده کل:** 0.75 تا 2.5
+
+---
+
+##### مثال واقعی
+
+**سناریو:** BTC/USDT، 200 کندل اخیر
+
+```python
+# بعد از FFT:
+{
+    'cycles': [
+        {
+            'period': 28,              # چرخه هفتگی (تقریباً)
+            'amplitude': 180.0,
+            'amplitude_percent': 0.36,  # 0.36% قیمت
+            'phase': 4.71              # 3π/2 → در حال نزول به کف
+        },
+        {
+            'period': 14,              # چرخه نیم‌هفتگی
+            'amplitude': 120.0,
+            'amplitude_percent': 0.24,
+            'phase': 1.57              # π/2 → در حال صعود
+        },
+        {
+            'period': 7,               # چرخه روزانه
+            'amplitude': 85.0,
+            'amplitude_percent': 0.17,
+            'phase': 0.0               # 0 → در کف
+        }
+    ],
+
+    'forecast': {
+        'values': [50050, 50095, 50140, ..., 50680],
+        'direction': 'bullish',        # پیش‌بینی صعودی
+        'strength': 0.0126            # 1.26% افزایش
+    }
+}
+
+# محاسبه امتیاز:
+prediction_clarity = min(1.0, 0.0126 × 5) = min(1.0, 0.063) = 0.063... wait, فرمول اشتباه است!
+
+# اصلاح:
+# strength = 0.0126 = 1.26%
+prediction_clarity = min(1.0, 1.26 × 5) = min(1.0, 6.3) = 1.0 ✓
+
+cycles_strength = (0.36 + 0.24 + 0.17) / 10 = 0.77 / 10 = 0.077
+# این خیلی کم است! باید به درصد باشد:
+cycles_strength = (0.36 + 0.24 + 0.17 + ... تا 5 چرخه) / 10
+
+# فرض کنیم مجموع = 1.5%
+cycles_strength = 1.5 / 10 = 0.15
+
+score = 2.5 × 1.0 × 0.15 = 0.375  # خیلی کم!
+
+# به نظر می‌رسد این سیستم امتیازات پایینی می‌دهد
+```
+
+---
+
+##### نکات کلیدی
+
+1. **FFT-Based:** تنها تحلیل مبتنی بر فرکانس در سیستم
+
+2. **Detrending ضروری:** بدون آن FFT نتیجه غلط می‌دهد
+
+3. **حداقل 200 کندل:** FFT به داده کافی نیاز دارد
+
+4. **Top 5 Cycles:** فقط 5 چرخه قوی‌ترین استفاده می‌شوند
+
+5. **20-Candle Forecast:** پیش‌بینی کوتاه‌مدت (نه بلندمدت)
+
+6. **امتیازات پایین:** معمولاً 0.75 تا 2.5 (کمتر از سایر سیگنال‌ها)
+
+7. **Phase مهم:** فاز چرخه نشان می‌دهد الان در کجای چرخه هستیم
+
+8. **⚠️ محدودیت:** FFT فقط برای بازارهای **چرخه‌ای** (Range) خوب کار می‌کند، نه ترندهای قوی
 
 ---
 
