@@ -3798,49 +3798,444 @@ score = 2.5 × 1.0 × 0.15 = 0.375  # خیلی کم!
 analysis_data['volatility'] = self.analyze_volatility_conditions(df)
 ```
 
-**چه بررسی می‌شود؟**
+این بخش برای **محافظت از سرمایه** در شرایط نوسان غیرعادی طراحی شده است.
 
-1. **محاسبه ATR (Average True Range):**
-   ```python
-   atr = talib.ATR(high, low, close, timeperiod=14)
-   atr_percent = (atr / close) * 100  # نرمال‌سازی
-   ```
+---
 
-2. **مقایسه با میانگین:**
-   ```python
-   atr_ma = moving_average(atr_percent, 20)
-   volatility_ratio = current_atr / atr_ma
-   ```
+#### الگوریتم تحلیل نوسان
 
-3. **تعیین وضعیت نوسان:**
-   - `extreme`: نوسان بسیار بالا (ratio > 2.0) → **خطرناک!**
-   - `high`: نوسان بالا (ratio > 1.5)
-   - `normal`: نوسان عادی (ratio 0.7-1.5)
-   - `low`: نوسان پایین (ratio < 0.7)
+تشخیص نوسان در **۵ مرحله** انجام می‌شود:
 
-**خروجی:**
+##### مرحله ۱: محاسبه ATR (Average True Range)
+
+ATR نوسان واقعی بازار را اندازه‌گیری می‌کند با در نظر گرفتن گپ‌های قیمتی:
+
 ```python
-{
-    'condition': 'high',
-    'volatility_ratio': 1.75,
-    'atr_percent': 2.5,  # نوسان 2.5% قیمت
-    'score': 0.8,        # ضریب امتیاز
-    'reject': False      # آیا سیگنال رد شود؟
-}
+# کد: signal_generator.py:4472
+high_p = df['high'].values.astype(np.float64)
+low_p = df['low'].values.astype(np.float64)
+close_p = df['close'].values.astype(np.float64)
+
+atr = talib.ATR(high_p, low_p, close_p, timeperiod=14)
 ```
 
-**تأثیر بر امتیازدهی:**
+**فرمول ATR:**
+```
+True Range (TR) = max(
+    high - low,
+    abs(high - close_prev),
+    abs(low - close_prev)
+)
 
-- **نوسان عادی (normal):** → **×1.0** (بدون تغییر)
-- **نوسان پایین (low):** → **×0.9** (کاهش 10%)
-- **نوسان بالا (high):** → **×0.8** (کاهش 20%)
-- **نوسان خطرناک (extreme):** → **سیگنال رد می‌شود!** ❌
+ATR(14) = میانگین متحرک 14 دوره‌ای از TR
+```
+
+**مثال محاسبه:**
+```
+کندل فعلی:
+  High = 50,000
+  Low = 49,000
+  Close قبلی = 48,500
+
+TR = max(
+    50,000 - 49,000 = 1,000,
+    |50,000 - 48,500| = 1,500,  ← بیشترین
+    |49,000 - 48,500| = 500
+) = 1,500
+
+ATR = میانگین 14 TR اخیر
+```
+
+---
+
+##### مرحله ۲: نرمال‌سازی ATR (Percentage ATR)
+
+برای مقایسه بین قیمت‌های مختلف، ATR به درصد تبدیل می‌شود:
+
+```python
+# کد: signal_generator.py:4479-4481
+valid_close_p = close_p[-len(valid_atr):]
+atr_pct = (valid_atr / valid_close_p) * 100
+```
+
+**فرمول:**
+```
+ATR% = (ATR / قیمت فعلی) × 100
+```
 
 **مثال:**
 ```
-امتیاز اولیه = 75
-نوسان = high (0.8)
+ATR = 1,500
+قیمت = 50,000
+
+ATR% = (1,500 / 50,000) × 100 = 3.0%
+
+→ نوسان معمولی قیمت 3% است
+```
+
+---
+
+##### مرحله ۳: محاسبه میانگین نوسان (ATR% Moving Average)
+
+برای تشخیص نوسان **غیرعادی**، ATR فعلی با میانگین تاریخی مقایسه می‌شود:
+
+```python
+# کد: signal_generator.py:4484-4491
+if use_bottleneck:
+    atr_pct_ma = bn.move_mean(atr_pct, window=20, min_count=1)
+else:
+    for i in range(len(atr_pct)):
+        start_idx = max(0, i - 20 + 1)
+        atr_pct_ma[i] = np.mean(atr_pct[start_idx:i + 1])
+```
+
+**پارامترها:**
+- **window = 20:** میانگین 20 دوره اخیر (پیش‌فرض: `vol_atr_ma_period`)
+
+**مثال:**
+```
+ATR% در 20 کندل اخیر:
+[2.1, 2.3, 2.0, 2.4, 2.2, ..., 3.0]
+
+ATR%_MA = میانگین این مقادیر = 2.3%
+ATR% فعلی = 3.0%
+```
+
+---
+
+##### مرحله ۴: محاسبه نسبت نوسان (Volatility Ratio)
+
+این نسبت نشان می‌دهد نوسان فعلی چقدر از حالت عادی فاصله دارد:
+
+```python
+# کد: signal_generator.py:4494-4498
+current_atr_pct = atr_pct[-1]
+current_atr_pct_ma = atr_pct_ma[-1]
+
+volatility_ratio = current_atr_pct / current_atr_pct_ma if current_atr_pct_ma > 0 else 1.0
+```
+
+**فرمول:**
+```
+Volatility Ratio = ATR% فعلی / میانگین ATR%
+```
+
+**تفسیر:**
+```
+ratio = 1.0  →  نوسان عادی (ATR فعلی = میانگین)
+ratio = 1.5  →  نوسان 50% بیشتر از حالت عادی
+ratio = 2.0  →  نوسان 2 برابر حالت عادی (خطرناک!)
+ratio = 0.5  →  نوسان 50% کمتر از حالت عادی
+```
+
+**مثال:**
+```
+ATR% فعلی = 3.0%
+میانگین ATR% = 2.3%
+
+Volatility Ratio = 3.0 / 2.3 = 1.30
+
+→ نوسان 30% بیشتر از حالت عادی است
+```
+
+---
+
+##### مرحله ۵: طبقه‌بندی وضعیت نوسان
+
+بر اساس `volatility_ratio`، وضعیت نوسان تعیین می‌شود:
+
+```python
+# کد: signal_generator.py:4500-4512
+vol_condition = 'normal'
+vol_score = 1.0
+
+if volatility_ratio > self.vol_extreme_thresh:      # پیش‌فرض: 1.8
+    vol_condition = 'extreme'
+    vol_score = 0.5                                 # از پیش‌فرض scores.extreme
+elif volatility_ratio > self.vol_high_thresh:       # پیش‌فرض: 1.3
+    vol_condition = 'high'
+    vol_score = 0.8                                 # از پیش‌فرض scores.high
+elif volatility_ratio < self.vol_low_thresh:        # پیش‌فرض: 0.7
+    vol_condition = 'low'
+    vol_score = 0.9                                 # از پیش‌فرض scores.low
+```
+
+**جدول طبقه‌بندی (با مقادیر پیش‌فرض):**
+
+| شرایط | Ratio | وضعیت | ضریب امتیاز | تفسیر |
+|-------|-------|-------|-------------|-------|
+| ratio ≥ 1.8 | 1.8+ | **extreme** | **×0.5** | نوسان خطرناک - سیگنال رد می‌شود ❌ |
+| 1.3 ≤ ratio < 1.8 | 1.3-1.8 | **high** | **×0.8** | نوسان بالا - کاهش 20% امتیاز |
+| 0.7 ≤ ratio < 1.3 | 0.7-1.3 | **normal** | **×1.0** | نوسان عادی - بدون تغییر ✓ |
+| ratio < 0.7 | 0.0-0.7 | **low** | **×0.9** | نوسان پایین - کاهش 10% امتیاز |
+
+**نکته:** این آستانه‌ها قابل تنظیم در فایل کانفیگ هستند:
+```python
+# کد: signal_generator.py:1514-1517
+self.vol_high_thresh = self.vol_config.get('high_volatility_threshold', 1.3)
+self.vol_low_thresh = self.vol_config.get('low_volatility_threshold', 0.7)
+self.vol_extreme_thresh = self.vol_config.get('extreme_volatility_threshold', 1.8)
+self.vol_scores = self.vol_config.get('scores', {})
+```
+
+---
+
+#### رد سیگنال در نوسان خطرناک
+
+در صورت فعال بودن `vol_reject_extreme`، سیگنال‌ها در نوسان خطرناک رد می‌شوند:
+
+```python
+# کد: signal_generator.py:4514
+reject_due_to_extreme = vol_condition == 'extreme' and self.vol_reject_extreme
+```
+
+**منطق:**
+```
+اگر نوسان = extreme و vol_reject_extreme = True
+→ reject = True
+→ سیگنال نادیده گرفته می‌شود
+```
+
+---
+
+#### خروجی تحلیل نوسان
+
+```python
+{
+    'status': 'ok',                    # 'ok', 'disabled_or_insufficient_data', 'error'
+    'score': 0.8,                      # ضریب امتیاز (0.5, 0.8, 0.9, یا 1.0)
+    'condition': 'high',               # 'low', 'normal', 'high', 'extreme'
+    'reject': False,                   # True اگر باید سیگنال رد شود
+    'volatility_ratio': 1.45,          # نسبت نوسان فعلی به میانگین
+    'details': {
+        'current_atr_pct': 3.2,        # ATR% فعلی
+        'average_atr_pct': 2.2,        # میانگین ATR%
+        'raw_atr': 1600.5              # مقدار خام ATR
+    }
+}
+```
+
+---
+
+#### مثال‌های کامل محاسبه
+
+##### مثال ۱: نوسان بالا (High Volatility)
+
+**داده‌های ورودی:**
+```
+قیمت فعلی = 50,000 USDT
+ATR(14) = 1,600
+ATR% فعلی = (1,600 / 50,000) × 100 = 3.2%
+
+میانگین 20 روزه ATR%:
+[2.0, 2.1, 2.3, 2.2, 2.4, ..., 2.0]  →  میانگین = 2.2%
+```
+
+**محاسبات:**
+```
+1️⃣ Volatility Ratio = 3.2 / 2.2 = 1.45
+
+2️⃣ طبقه‌بندی:
+   1.45 > 1.3  ✓  (vol_high_thresh)
+   1.45 < 1.8  ✓  (vol_extreme_thresh)
+   → condition = 'high'
+
+3️⃣ امتیازدهی:
+   vol_score = 0.8
+
+4️⃣ تصمیم:
+   reject = False  (چون extreme نیست)
+```
+
+**تأثیر بر سیگنال:**
+```
+امتیاز اولیه سیگنال = 75
 امتیاز نهایی = 75 × 0.8 = 60
+
+→ به دلیل نوسان بالا، امتیاز 20% کاهش یافت
+```
+
+---
+
+##### مثال ۲: نوسان خطرناک (Extreme Volatility) - رد سیگنال
+
+**داده‌های ورودی:**
+```
+قیمت فعلی = 45,000 USDT  (افت شدید!)
+ATR(14) = 3,600
+ATR% فعلی = (3,600 / 45,000) × 100 = 8.0%
+
+میانگین 20 روزه ATR% = 2.5%
+```
+
+**محاسبات:**
+```
+1️⃣ Volatility Ratio = 8.0 / 2.5 = 3.2
+
+2️⃣ طبقه‌بندی:
+   3.2 > 1.8  ✓  (vol_extreme_thresh)
+   → condition = 'extreme'
+
+3️⃣ امتیازدهی:
+   vol_score = 0.5
+
+4️⃣ تصمیم (با vol_reject_extreme = True):
+   reject = True  ❌
+```
+
+**نتیجه:**
+```
+⚠️ سیگنال رد می‌شود!
+
+دلیل: نوسان 3.2 برابر حالت عادی است
+       → خطر از دست دادن سرمایه بسیار بالاست
+       → بهتر است معامله انجام نشود
+```
+
+---
+
+##### مثال ۳: نوسان پایین (Low Volatility)
+
+**داده‌های ورودی:**
+```
+قیمت فعلی = 50,000 USDT
+ATR(14) = 800
+ATR% فعلی = (800 / 50,000) × 100 = 1.6%
+
+میانگین 20 روزه ATR% = 2.5%
+```
+
+**محاسبات:**
+```
+1️⃣ Volatility Ratio = 1.6 / 2.5 = 0.64
+
+2️⃣ طبقه‌بندی:
+   0.64 < 0.7  ✓  (vol_low_thresh)
+   → condition = 'low'
+
+3️⃣ امتیازدهی:
+   vol_score = 0.9
+
+4️⃣ تصمیم:
+   reject = False
+```
+
+**تأثیر بر سیگنال:**
+```
+امتیاز اولیه = 65
+امتیاز نهایی = 65 × 0.9 = 58.5 ≈ 59
+
+→ نوسان پایین باعث کاهش 10% امتیاز شد
+   (چون فرصت سود کمتری وجود دارد)
+```
+
+---
+
+#### تأثیر بر امتیاز نهایی سیگنال
+
+نوسان به عنوان **ضریب** در محاسبه امتیاز نهایی استفاده می‌شود:
+
+```python
+final_score = base_score × volatility_score
+```
+
+**جدول تأثیر:**
+
+| وضعیت نوسان | ضریب | تأثیر بر امتیاز 75 | تفسیر |
+|-------------|------|-------------------|-------|
+| **Extreme** (ratio ≥ 1.8) | ×0.5 | 75 → **37.5** (یا رد) | خطرناک - رد سیگنال |
+| **High** (ratio ≥ 1.3) | ×0.8 | 75 → **60** | کاهش 20% - احتیاط |
+| **Normal** (0.7-1.3) | ×1.0 | 75 → **75** | بدون تغییر - ایده‌آل |
+| **Low** (ratio < 0.7) | ×0.9 | 75 → **67.5** | کاهش 10% - فرصت کم |
+
+---
+
+#### شرایط عدم فعال‌سازی
+
+تحلیل نوسان در موارد زیر غیرفعال می‌شود:
+
+```python
+# کد: signal_generator.py:4462-4464
+if not self.vol_enabled or df is None or len(df) < max(self.vol_atr_period, self.vol_atr_ma_period) + 10:
+    results['status'] = 'disabled_or_insufficient_data'
+    return results
+```
+
+**شرایط:**
+1. `vol_enabled = False` → نوسان در کانفیگ غیرفعال شده
+2. `df is None` → داده موجود نیست
+3. `len(df) < max(14, 20) + 10 = 30` → حداقل 30 کندل لازم است
+
+**در این صورت:**
+```python
+{
+    'status': 'disabled_or_insufficient_data',
+    'score': 1.0,  # بدون تأثیر
+    'condition': 'normal'
+}
+```
+
+---
+
+#### نکات کلیدی
+
+##### ✅ چرا نوسان پایین امتیاز کاهش می‌دهد؟
+
+```
+نوسان پایین = حرکات قیمتی کوچک
+              = فرصت سود کمتر
+              = نیاز به صبر بیشتر برای رسیدن به Target
+
+→ سیگنال ضعیف‌تر است
+```
+
+##### ✅ چرا نوسان بالا خطرناک است؟
+
+```
+نوسان بالا = حرکات قیمتی ناگهانی
+            = احتمال StopLoss شدن زیاد
+            = ریسک بالا
+
+→ بهتر است منتظر آرام شدن بازار بود
+```
+
+##### ✅ استراتژی بهینه
+
+```
+1. در نوسان Normal: معامله بدون نگرانی ✓
+2. در نوسان High: استفاده از حجم کمتر
+3. در نوسان Extreme: عدم معامله (منتظر ماندن)
+4. در نوسان Low: افزایش حجم (ریسک کمتر)
+```
+
+---
+
+#### خلاصه الگوریتم
+
+```
+┌─────────────────────────────────────┐
+│ 1. محاسبه ATR(14)                  │
+└──────────────┬──────────────────────┘
+               ↓
+┌─────────────────────────────────────┐
+│ 2. نرمال‌سازی: ATR% = ATR/Price×100│
+└──────────────┬──────────────────────┘
+               ↓
+┌─────────────────────────────────────┐
+│ 3. میانگین MA(20) از ATR%          │
+└──────────────┬──────────────────────┘
+               ↓
+┌─────────────────────────────────────┐
+│ 4. Ratio = ATR% / MA(ATR%)          │
+└──────────────┬──────────────────────┘
+               ↓
+┌─────────────────────────────────────┐
+│ 5. طبقه‌بندی:                       │
+│    - Ratio ≥ 1.8  → Extreme (×0.5) │
+│    - Ratio ≥ 1.3  → High (×0.8)    │
+│    - Ratio < 0.7  → Low (×0.9)     │
+│    - دیگر موارد   → Normal (×1.0)  │
+└─────────────────────────────────────┘
 ```
 
 ---
