@@ -2757,86 +2757,232 @@ take_profit = 51500 * 0.999 = 51,450  # نزدیک مقاومت بعدی
 **محل:** `signal_generator.py:2465-2665`
 
 ```python
-analysis_data['harmonic_patterns'] = self.detect_harmonic_patterns(df)
+analysis_data['harmonic_patterns'] = self.detect_harmonic_patterns(
+    df, lookback=100, tolerance=0.03  # ±3%
+)
 ```
 
-**الگوهای شناسایی شده:**
+الگوهای هارمونیک بر اساس **نسبت‌های دقیق فیبوناچی** بین 5 نقطه بازگشت (X-A-B-C-D) تشکیل می‌شوند. این الگوها بسیار قوی و نادر هستند.
 
-این سیستم **4 الگوی اصلی هارمونیک** را شناسایی می‌کند:
+---
 
-#### 1. **Gartley Pattern**
-- نسبت‌های فیبوناچی:
-  - AB/XA = 0.618
-  - BC/AB = 0.382
-  - CD/BC = 1.272
-  - BD/BA = 0.786
+##### الگوریتم شناسایی (4 مرحله)
 
-#### 2. **Bat Pattern**
-- نسبت‌های فیبوناچی:
-  - AB/XA = 0.382 تا 0.5
-  - BC/AB = 0.382 تا 0.886
-  - CD/BC = 1.618 تا 2.618
-  - BD/BA = 0.886
+**مرحله 1: شناسایی X-A-B-C-D**
 
-#### 3. **Butterfly Pattern**
-- نسبت‌های فیبوناچی:
-  - AB/XA = 0.786
-  - BC/AB = 0.382 تا 0.886
-  - CD/BC = 1.618 تا 2.618
-  - BD/BA = 1.27 تا 1.618
-
-#### 4. **Crab Pattern**
-- نسبت‌های فیبوناچی:
-  - AB/XA = 0.382 تا 0.618
-  - BC/AB = 0.382 تا 0.886
-  - CD/BC = 2.618 تا 3.618
-  - BD/BA = 1.618
-
-**نحوه شناسایی:**
-
-1. **پیدا کردن Peaks و Valleys:**
-   ```python
-   peaks, valleys = self.find_peaks_and_valleys(df['close'].values)
-   ```
-   - نقاط بازگشت قیمت پیدا می‌شوند
-
-2. **تشکیل نقاط X-A-B-C-D:**
-   - 5 نقطه متوالی که الگو را می‌سازند
-   - باید بین Peak و Valley تناوب داشته باشند
-
-3. **بررسی نسبت‌های فیبوناچی:**
-   - هر نسبت با tolerance ±3% بررسی می‌شود
-   - اگر همه نسبت‌ها مطابقت داشتند → الگو تأیید می‌شود
-
-4. **محاسبه کیفیت الگو (Pattern Quality):**
-   ```python
-   confidence = 1.0 - max(abs(ab_xa - 0.618), abs(bc_ab - 0.382), ...) / tolerance
-   ```
-   - هرچه نسبت‌ها دقیق‌تر → کیفیت بالاتر
-
-**خروجی:**
 ```python
-{
-    'type': 'bullish_gartley',
-    'direction': 'bullish',
-    'confidence': 0.92,  # کیفیت الگو
-    'points': {
-        'X': {'price': 50000},
-        'A': {'price': 49000},
-        'B': {'price': 49618},
-        'C': {'price': 49382},
-        'D': {'price': 49100}  # نقطه ورود احتمالی
-    },
-    'projected_target': 49800,  # هدف قیمتی
-    'suggested_stop': 48900     # حد ضرر پیشنهادی
-}
+# 1. Peaks/Valleys
+peaks, valleys = self.find_peaks_and_valleys(df['close'].values)
+all_points = [(idx, 'peak'/'valley', price), ...]
+all_points.sort(key=lambda x: x[0])  # مرتب‌سازی زمانی
+
+# 2. انتخاب 5 نقطه متوالی
+for i in range(len(all_points) - 4):
+    X, A, B, C, D = all_points[i:i + 5]
+
+    # شرط: تناوب peak/valley (X≠A≠B≠C≠D)
+    if not all_alternating:
+        continue
 ```
 
-**امتیازدهی:**
-- الگوی هارمونیک با کیفیت بالا (confidence > 0.85) → **+30 تا +50 امتیاز**
-- الگوی هارمونیک با کیفیت متوسط (confidence 0.7-0.85) → **+20 تا +30 امتیاز**
-- الگوی نزدیک به تکمیل (در نقطه D) → **+10 امتیاز اضافی**
-- **این یکی از قوی‌ترین سیگنال‌ها است!**
+**کد:** `signal_generator.py:2475-2492`
+
+---
+
+**مرحله 2: محاسبه نسبت‌های فیبوناچی**
+
+```python
+xa = abs(x_price - a_price)
+ab = abs(a_price - b_price)
+bc = abs(b_price - c_price)
+cd = abs(c_price - d_price)
+
+ab_xa = ab / xa      # نسبت AB به XA
+bc_ab = bc / ab      # نسبت BC به AB
+cd_bc = cd / bc      # نسبت CD به BC
+bd_ba = abs(d_price - b_price) / abs(a_price - b_price)
+```
+
+**کد:** `signal_generator.py:2500-2511`
+
+---
+
+**مرحله 3: تطبیق با 4 الگو**
+
+| الگو | AB/XA | BC/AB | CD/BC | BD/BA | ویژگی |
+|------|-------|-------|-------|-------|-------|
+| **Gartley** | **0.618** | **0.382** | **1.272** | **0.786** | محافظه‌کارانه |
+| **Bat** | **0.382** | **0.382** | **1.618** | **0.886** | بازگشت عمیق (88.6%) |
+| **Butterfly** | **0.786** | **0.382** | **1.618** | **1.27** | تجاوز از X |
+| **Crab** | **0.382** | **0.618** | **3.618** | **1.618** | شدیدترین (تجاوز 161.8%) |
+
+**کد:**
+- Gartley: `2515-2549`
+- Bat: `2551-2585`
+- Butterfly: `2587-2621`
+- Crab: `2623-2657`
+
+**تطبیق با Tolerance:**
+```python
+is_in_range = lambda val, target: abs(val - target) <= 0.03  # ±3%
+
+# مثال Gartley:
+is_gartley = (
+    is_in_range(ab_xa, 0.618) and
+    is_in_range(bc_ab, 0.382) and
+    is_in_range(cd_bc, 1.272) and
+    is_in_range(bd_ba, 0.786)
+)
+```
+
+---
+
+**مرحله 4: محاسبه Confidence**
+
+```python
+confidence = 1.0 - max(
+    abs(ab_xa - target1),
+    abs(bc_ab - target2),
+    abs(cd_bc - target3),
+    abs(bd_ba - target4)
+) / tolerance  # 0.03
+```
+
+**مثال:**
+```python
+# نسبت‌های واقعی:
+ab_xa = 0.625  # هدف: 0.618 → انحراف: 0.007
+bc_ab = 0.380  # هدف: 0.382 → انحراف: 0.002
+cd_bc = 1.280  # هدف: 1.272 → انحراف: 0.008 (max)
+bd_ba = 0.790  # هدف: 0.786 → انحراف: 0.004
+
+confidence = 1.0 - (0.008 / 0.03) = 0.733 = 73.3%
+```
+
+**فیلتر:** فقط `confidence >= 0.7` قبول می‌شوند
+
+**کد:** `signal_generator.py:2522-2527, 2558-2563, ...`
+
+---
+
+##### خروجی
+
+```python
+[
+    {
+        'type': 'bullish_gartley',
+        'direction': 'bullish',
+        'confidence': 0.92,
+
+        'points': {
+            'X': {'index': 10, 'price': 50000.0},
+            'A': {'index': 15, 'price': 49000.0},
+            'B': {'index': 22, 'price': 49618.0},
+            'C': {'index': 28, 'price': 49382.0},
+            'D': {'index': 35, 'price': 49786.0}  # نقطه ورود
+        },
+
+        'ratios': {
+            'AB/XA': 0.618, 'BC/AB': 0.382,
+            'CD/BC': 1.275, 'BD/BA': 0.788
+        },
+
+        'index': 35,  # آخرین نقطه
+        'score': 3.68  # base (4.0) × confidence (0.92)
+    }
+]
+```
+
+---
+
+##### امتیازدهی
+
+**کد:** `signal_generator.py:5300-5311`
+
+```python
+for pattern in harmonic_patterns:
+    base_score = self.pattern_scores.get(pattern_type, 4.0)
+    pattern_score = base_score * confidence * tf_weight
+
+    if direction == 'bullish':
+        bullish_score += pattern_score
+```
+
+**جدول امتیازات:**
+
+| الگو | Base Score | با Conf=0.9 | با Conf=0.7 |
+|------|-----------|-------------|-------------|
+| Gartley/Bat | **4.0** | **3.6** | **2.8** |
+| Butterfly | **4.5** | **4.05** | **3.15** |
+| Crab | **5.0** | **4.5** | **3.5** |
+
+**محدوده کل:** 2.8 تا 5.0 (با TF weight)
+
+---
+
+##### کاربردها
+
+**1. محاسبه SL/TP:**
+
+**کد:** `signal_generator.py:4049-4089`
+
+```python
+if harmonic_found:
+    best_pattern = sorted(patterns, key=lambda x: x['confidence'])[0]
+    D_price = best_pattern['points']['D']['price']
+    A_price = best_pattern['points']['A']['price']
+    X_price = best_pattern['points']['X']['price']
+
+    # Bullish:
+    entry = D_price
+    take_profit = A_price  # بازگشت به A
+    stop_loss = X_price * 0.998  # زیر X
+```
+
+**مثال RR:**
+```
+Entry: 49786 (D)
+TP: 49000 (A) → Reward = 786
+SL: 49900 (X) → Risk = 114
+RR = 6.9:1 ✓✓✓
+```
+
+---
+
+**2. تقویت Reversal:**
+
+**کد:** `signal_generator.py:3739-3743`
+
+```python
+for pattern in harmonic_patterns:
+    if 'butterfly' in pattern['type'] or 'crab' in pattern['type']:
+        strength += 0.8 * pattern['confidence']
+        is_reversal = True
+```
+
+---
+
+**3. Pattern Multiplier:**
+
+**کد:** `signal_generator.py:5089`
+
+```python
+harmonic_count = count_harmonic_patterns()
+score.harmonic_pattern_score = 1.0 + (harmonic_count * 0.2)
+# 1 الگو → ×1.2, 2 الگو → ×1.4
+```
+
+---
+
+##### نکات کلیدی
+
+1. **نادر اما قوی:** الگوهای هارمونیک کمیاب اما بسیار قابل اعتماد هستند
+2. **Tolerance ±3%:** نسبت‌ها باید در محدوده دقیق باشند
+3. **4 الگو:** Gartley < Bat < Butterfly < Crab (از ضعیف به قوی)
+4. **X-A-B-C-D Alternation:** نقاط باید متناوب peak/valley باشند
+5. **Confidence >= 0.7:** فیلتر کیفیت
+6. **امتیازات بالا:** 2.8 تا 5.0 (قوی‌ترین سیگنال‌ها)
+7. **Integration SL/TP:** مستقیماً در محاسبه ریسک استفاده می‌شود
 
 ---
 
