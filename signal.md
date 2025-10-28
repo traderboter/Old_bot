@@ -1974,32 +1974,416 @@ for signal in macd_result['signals']:
 
 ---
 
-#### مرحله 5: تحلیل Price Action (الگوهای شمعی)
+#### مرحله 5: تحلیل Price Action (الگوهای شمعی و تحلیل‌های فنی)
+
+**📍 کد مرجع:** `signal_generator.py:3867-4014` - تابع `analyze_price_action()`
+
 ```python
 analysis_data['price_action'] = await self.analyze_price_action(df)
 ```
 
-**الگوهای شناسایی شده:**
-- Engulfing (پوششی)
-- Hammer / Shooting Star
-- Doji
-- Morning Star / Evening Star
-- و بیش از 20 الگوی دیگر
+این بخش **جامع‌ترین تحلیل فنی** را انجام می‌دهد و شامل 4 دسته اصلی است:
+1. الگوهای شمعی (Candlestick Patterns)
+2. الگوهای چند-کندلی (Multi-Candle Patterns)
+3. تحلیل Bollinger Bands
+4. تحلیل ترکیبی حجم و قیمت
+
+---
+
+##### 1️⃣ الگوهای شمعی تک-کندلی (Single Candle Patterns)
+
+**📍 کد:** `signal_generator.py:1839-1953` - تابع `detect_candlestick_patterns()`
+
+سیستم با استفاده از **TA-Lib** این الگوها را شناسایی می‌کند:
+
+| الگو | نام فارسی | جهت | امتیاز پایه | نوع سیگنال |
+|------|-----------|-----|------------|-----------|
+| `hammer` | چکش | Bullish | **2.0** | برگشتی صعودی |
+| `inverted_hammer` | چکش وارونه | Bullish | **2.0** | برگشتی صعودی |
+| `engulfing` | پوششی | Neutral* | **2.5** | قوی (جهت بستگی به value دارد) |
+| `morning_star` | ستاره صبحگاهی | Bullish | **3.0** | برگشتی قوی صعودی |
+| `evening_star` | ستاره عصرگاهی | Bearish | **3.0** | برگشتی قوی نزولی |
+| `harami` | حامله | Neutral* | **1.8** | تردید/برگشت |
+| `doji` | دوجی | Neutral | **1.5** | تردید بازار |
+| `dragonfly_doji` | دوجی سنجاقک | Bullish | **2.2** | برگشتی صعودی |
+| `gravestone_doji` | دوجی سنگ قبر | Bearish | **2.2** | برگشتی نزولی |
+| `shooting_star` | ستاره دنباله‌دار | Bearish | **2.3** | برگشتی نزولی |
+| `marubozu` | مارابوزو | Neutral* | **2.0** | قوی (بدون سایه) |
+| `hanging_man` | مرد آویزان | Bearish | **2.1** | برگشتی نزولی |
+
+*جهت Neutral به معنی است که جهت الگو توسط خود کتابخانه تعیین می‌شود (بر اساس value مثبت/منفی).
+
+**محاسبه قدرت و امتیاز:**
+
+```python
+# signal_generator.py:1931-1936
+pattern_strength = min(1.0, abs(pattern_value) / 100)
+if pattern_strength < 0.1:
+    pattern_strength = 0.7  # حداقل قدرت
+
+pattern_score = base_score * pattern_strength
+```
+
+**فرمول:**
+```
+Pattern Strength = min(1.0, |pattern_value| / 100)
+Final Score = Base Score × Pattern Strength
+```
+
+**مثال:**
+```
+Hammer detected: pattern_value = 85
+Pattern Strength = min(1.0, 85/100) = 0.85
+Base Score = 2.0
+Final Score = 2.0 × 0.85 = 1.7
+```
+
+---
+
+##### 2️⃣ الگوهای چند-کندلی (Multi-Candle Patterns)
+
+**📍 کد:** `signal_generator.py:1955-2310`
+
+**الف) Head and Shoulders (سر و شانه)**
+
+**📍 کد:** `signal_generator.py:1976-2118`
+
+یکی از قوی‌ترین الگوهای برگشتی:
+
+**ساختار الگو:**
+```
+        Head (سر)
+       /    \
+      /      \
+ L.Shoulder  R.Shoulder
+    /          \
+ Dip1 ------- Dip2 (Neckline خط گردن)
+```
+
+**شرایط تشخیص:**
+1. پیدا کردن 3 قله (left shoulder, head, right shoulder)
+2. `head_price > left_shoulder_price` و `head_price > right_shoulder_price`
+3. دو شانه تقریباً هم‌سطح: `shoulder_diff < 10%`
+4. فاصله زمانی متقارن: `time_gap_ratio > 0.6`
+5. دو دره بین قله‌ها (dips) برای تشکیل neckline
+6. neckline تقریباً افقی: `neckline_diff < 5%`
+
+**کد واقعی:**
+```python
+# signal_generator.py:2000-2003
+if head_price > left_shoulder_price and head_price > right_shoulder_price:
+    shoulder_diff_percent = abs(right_shoulder_price - left_shoulder_price) / left_shoulder_price
+    if shoulder_diff_percent < 0.1:  # شانه‌ها هم‌سطح
+```
+
+**محاسبه Price Target:**
+```python
+pattern_height = head_price - neckline_price
+price_target = neckline_price - pattern_height  # برای bearish
+```
+
+**امتیازدهی:**
+```python
+# signal_generator.py:2029-2041
+pattern_quality = (1.0 - shoulder_diff) × time_gap_ratio × (1.0 - neckline_diff)
+score = 4.0 × pattern_quality
+```
 
 **خروجی:**
 ```python
 {
-    'patterns': ['bullish_engulfing', 'hammer'],
+    'type': 'head_and_shoulders',
+    'direction': 'bearish',
+    'breakout_confirmed': True/False,
+    'neckline_price': 50000,
+    'price_target': 48500,
     'pattern_quality': 0.85,
-    'last_candle_type': 'bullish',
-    'pattern_location': 'support'  # در نزدیکی سطح حمایت
+    'score': 3.4,
+    'points': {...}
 }
 ```
 
-**امتیازدهی:**
-- الگوی قوی (مثل Engulfing) → **+15 تا +25 امتیاز**
-- الگو در محل مناسب (نزدیک S/R) → **+10 امتیاز اضافی**
-- کیفیت الگو (Pattern Quality) → **×1.0 تا ×1.5 ضریب**
+**Inverse Head & Shoulders (سر و شانه معکوس)**
+
+همان منطق ولی با دره‌ها و قله‌های معکوس:
+- `head_price < left_shoulder` و `head_price < right_shoulder`
+- Direction: Bullish
+- Price Target: `neckline + pattern_height`
+
+---
+
+**ب) Triangle Patterns (الگوهای مثلث)**
+
+**📍 کد:** `signal_generator.py:2120-2219`
+
+**3 نوع مثلث:**
+
+| نوع | شرایط | جهت | امتیاز پایه |
+|-----|-------|-----|------------|
+| **Ascending Triangle** | خط بالا افقی، خط پایین صعودی | Bullish | **3.5** |
+| **Descending Triangle** | خط بالا نزولی، خط پایین افقی | Bearish | **3.5** |
+| **Symmetric Triangle** | خط بالا نزولی، خط پایین صعودی | بستگی به موقعیت | **3.5** |
+
+**تشخیص:**
+```python
+# signal_generator.py:2154-2156
+is_ascending = abs(upper_slope) < 0.001 and lower_slope > 0.001
+is_descending = upper_slope < -0.001 and abs(lower_slope) < 0.001
+is_symmetric = upper_slope < -0.001 and lower_slope > 0.001
+```
+
+**محاسبه نقطه همگرایی (Convergence Point):**
+```python
+# signal_generator.py:2158-2160
+convergence_x = (lower_intercept - upper_intercept) / (upper_slope - lower_slope)
+convergence_y = upper_slope * convergence_x + upper_intercept
+```
+
+**Pattern Quality:**
+```python
+# signal_generator.py:2173-2175
+total_touches = len(peaks) + len(valleys)
+pattern_quality = min(1.0, total_touches / 6) × min(1.0, 1.0 - width / (upper * 0.2))
+```
+
+**Price Target:**
+```python
+pattern_height = max(highs[peaks]) - min(lows[valleys])
+target = current_price ± pattern_height
+```
+
+---
+
+**ج) Flag Patterns (الگوهای پرچم)**
+
+**📍 کد:** `signal_generator.py:2224-2310`
+
+پرچم‌ها الگوهای ادامه‌دهنده روند هستند:
+
+**ساختار:**
+```
+    /|      (Pole - میله پرچم)
+   / |
+  /  |
+ /   |
+/    ////   (Flag - پرچم)
+    ////
+   ////
+```
+
+**شرایط تشخیص:**
+
+1. **Pole (میله):** حرکت قوی قیمت
+   ```python
+   # signal_generator.py:2243-2244
+   pole_price_change_pct = (closes[pole_end] - closes[pole_start]) / closes[pole_start]
+
+   is_bullish_pole = pole_price_change_pct > 0.03  # 3% افزایش
+   is_bearish_pole = pole_price_change_pct < -0.03  # 3% کاهش
+   ```
+
+2. **Volume قوی در Pole:**
+   ```python
+   pole_volume > avg_volume × 1.5
+   ```
+
+3. **Flag:** اصلاح کوچک با خطوط موازی
+   - Bull Flag: شیب‌های منفی (اصلاح نزولی)
+   - Bear Flag: شیب‌های مثبت (اصلاح صعودی)
+
+**کد تشخیص:**
+```python
+# signal_generator.py:2274-2283
+if is_bullish_pole:
+    is_valid_flag = (upper_slope < 0 and lower_slope < 0) or are_lines_parallel
+    pattern_type = 'bull_flag'
+elif is_bearish_pole:
+    is_valid_flag = (upper_slope > 0 and lower_slope > 0) or are_lines_parallel
+    pattern_type = 'bear_flag'
+```
+
+**Pattern Quality:**
+```python
+flag_quality = (1.0 if strong_volume else 0.7) × (1.0 - slopes_diff / 0.001)
+```
+
+**Price Target:**
+```python
+pole_height = abs(pole_price_change)
+price_target = current_price + pole_height  # bull flag
+price_target = current_price - pole_height  # bear flag
+```
+
+---
+
+##### 3️⃣ تحلیل Bollinger Bands
+
+**📍 کد:** `signal_generator.py:3893-3948`
+
+**محاسبه:**
+```python
+upper, middle, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+```
+
+**الف) BB Position:**
+```python
+bb_position = (current_price - lower_band) / (upper_band - lower_band)
+```
+- `bb_position = 0`: قیمت در باند پایین
+- `bb_position = 0.5`: قیمت در میانه
+- `bb_position = 1.0`: قیمت در باند بالا
+
+**ب) BB Width و Squeeze:**
+```python
+bb_width = (upper - lower) / middle
+bb_squeeze = bb_width < avg_width × 0.8
+```
+
+**سیگنال‌های Bollinger:**
+
+| سیگنال | شرط | جهت | امتیاز |
+|--------|-----|-----|--------|
+| `bollinger_squeeze` | عرض باند < 80% میانگین | Neutral | **2.0** |
+| `bollinger_upper_break` | قیمت > باند بالا | Bullish | **2.5** |
+| `bollinger_lower_break` | قیمت < باند پایین | Bearish | **2.5** |
+
+**کد:**
+```python
+# signal_generator.py:3929-3947
+if bb_squeeze:
+    signals.append({'type': 'bollinger_squeeze', 'score': 2.0})
+
+if current_close > current_upper:
+    signals.append({'type': 'bollinger_upper_break', 'direction': 'bullish', 'score': 2.5})
+elif current_close < current_lower:
+    signals.append({'type': 'bollinger_lower_break', 'direction': 'bearish', 'score': 2.5})
+```
+
+---
+
+##### 4️⃣ تحلیل ترکیبی حجم و قیمت
+
+**📍 کد:** `signal_generator.py:3953-3982`
+
+**محاسبه:**
+```python
+avg_volume = mean(volume[-30:-1])
+current_volume = volume[-1]
+volume_ratio = current_volume / avg_volume
+```
+
+**سیگنال‌های حجم:**
+
+| سیگنال | شرط | امتیاز |
+|--------|-----|--------|
+| `high_volume_bullish` | volume_ratio > 2.5 **و** کندل سبز | **2.8** |
+| `high_volume_bearish` | volume_ratio > 2.5 **و** کندل قرمز | **2.8** |
+
+**کد:**
+```python
+# signal_generator.py:3970-3982
+if volume_ratio > 2.5:
+    if current_close > df['open'].iloc[-1]:  # Bullish candle
+        signals.append({'type': 'high_volume_bullish', 'score': 2.8})
+    else:  # Bearish candle
+        signals.append({'type': 'high_volume_bearish', 'score': 2.8})
+```
+
+---
+
+##### 📊 خروجی نهایی تابع analyze_price_action
+
+```python
+{
+    'status': 'ok',
+    'direction': 'bullish',
+    'bullish_score': 8.5,
+    'bearish_score': 2.0,
+    'atr': 125.5,
+    'signals': [
+        {
+            'type': 'hammer',
+            'direction': 'bullish',
+            'score': 1.7,
+            'strength': 0.85
+        },
+        {
+            'type': 'bull_flag',
+            'direction': 'bullish',
+            'score': 2.7,
+            'pattern_quality': 0.9,
+            'price_target': 51200
+        },
+        {
+            'type': 'bollinger_lower_break',
+            'direction': 'bearish',
+            'score': 2.5
+        }
+    ],
+    'details': {
+        'candle_patterns': [...],
+        'bollinger_bands': {
+            'upper': 50500,
+            'middle': 50000,
+            'lower': 49500,
+            'position': 0.25,
+            'width': 0.02,
+            'squeeze': False
+        },
+        'volume_analysis': {
+            'current_volume': 5500000,
+            'avg_volume': 3200000,
+            'volume_ratio': 1.72,
+            'is_high_volume': True
+        }
+    }
+}
+```
+
+---
+
+##### 🎯 امتیازدهی نهایی
+
+**محاسبه جهت:**
+```python
+# signal_generator.py:3991-4006
+bullish_score = sum(s['score'] for s in signals if s['direction'] == 'bullish')
+bearish_score = sum(s['score'] for s in signals if s['direction'] == 'bearish')
+
+if bullish_score > bearish_score:
+    direction = 'bullish'
+elif bearish_score > bullish_score:
+    direction = 'bearish'
+else:
+    direction = 'neutral'
+```
+
+**خلاصه امتیازات:**
+
+| دسته الگو | بازه امتیاز | مثال |
+|-----------|-------------|------|
+| الگوهای شمعی تک-کندلی | 1.5 - 3.0 | Hammer: 2.0, Morning Star: 3.0 |
+| Head & Shoulders | 3.0 - 4.0 | با quality بالا: 4.0 |
+| Triangle Patterns | 2.5 - 3.5 | با quality بالا: 3.5 |
+| Flag Patterns | 2.0 - 3.0 | با volume قوی: 3.0 |
+| Bollinger Signals | 2.0 - 2.5 | Break: 2.5, Squeeze: 2.0 |
+| High Volume Signals | 2.8 | با کندل قوی |
+
+---
+
+##### 🔑 نکات کلیدی
+
+1. **الگوهای چند-کندلی قوی‌تر:** Head & Shoulders و Flag امتیاز بالاتر از الگوهای تک-کندلی دارند
+
+2. **Pattern Quality مهم است:** تمام الگوهای چند-کندلی دارای `pattern_quality` هستند که در امتیاز ضرب می‌شود
+
+3. **Price Target:** الگوهای پیچیده (H&S, Triangle, Flag) price target محاسبه می‌کنند
+
+4. **Bollinger Squeeze = آرامش قبل از طوفان:** نشانه انفجار حرکت آینده
+
+5. **حجم = تأیید کننده:** سیگنال‌هایی که با حجم بالا همراه باشند قوی‌تر هستند
+
+6. **ATR = معیار نوسانات:** برای محاسبه SL/TP استفاده می‌شود
 
 ---
 

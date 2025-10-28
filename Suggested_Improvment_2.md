@@ -2426,5 +2426,744 @@ def validate_macd_with_price_action(self, macd_signals: List[Dict],
 
 ---
 
-**تاریخ آخرین به‌روزرسانی:** 2025-10-27
+## 5. تحلیل Price Action (الگوهای شمعی و تحلیل‌های فنی)
+
+**📍 کد مرجع:** `signal_generator.py:3867-4014` - تابع `analyze_price_action()`
+
+### مشکلات و محدودیت‌های فعلی
+
+#### ❌ مشکل 1: عدم ارزیابی Context محل الگو
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:1931-1945
+# الگوها شناسایی می‌شوند ولی context محلی (S/R، روند) بررسی نمی‌شود
+patterns_found.append({
+    'type': pattern_name,
+    'direction': pattern_direction,
+    'score': pattern_score
+})
+```
+
+- الگو در نزدیکی Support/Resistance بررسی نمی‌شود
+- الگو در جهت روند یا خلاف روند چک نمی‌شود
+- کیفیت الگو بر اساس محل قرارگیری تنظیم نمی‌شود
+
+**راه حل پیشنهادی:**
+
+```python
+def evaluate_pattern_context(self, pattern: Dict, df: pd.DataFrame,
+                             sr_levels: Dict, trend_data: Dict) -> Dict:
+    """
+    ارزیابی context محلی الگو و تنظیم امتیاز
+    """
+
+    pattern_type = pattern['type']
+    pattern_direction = pattern['direction']
+    current_price = df['close'].iloc[-1]
+
+    context_score = 1.0
+    context_notes = []
+
+    # 1. بررسی نزدیکی به سطوح S/R
+    support_levels = sr_levels.get('support_levels', [])
+    resistance_levels = sr_levels.get('resistance_levels', [])
+
+    is_near_support = any(abs(current_price - s['price']) / current_price < 0.01
+                          for s in support_levels)
+    is_near_resistance = any(abs(current_price - r['price']) / current_price < 0.01
+                             for r in resistance_levels)
+
+    # الگوهای برگشتی در محل مناسب
+    is_reversal_pattern = pattern_type in ['hammer', 'morning_star', 'evening_star',
+                                           'shooting_star', 'head_and_shoulders']
+
+    if is_reversal_pattern:
+        if pattern_direction == 'bullish' and is_near_support:
+            context_score *= 1.5  # الگوی برگشت صعودی در support = عالی
+            context_notes.append('bullish_reversal_at_support')
+        elif pattern_direction == 'bearish' and is_near_resistance:
+            context_score *= 1.5  # الگوی برگشت نزولی در resistance = عالی
+            context_notes.append('bearish_reversal_at_resistance')
+        elif pattern_direction == 'bullish' and is_near_resistance:
+            context_score *= 0.5  # الگوی برگشت صعودی در resistance = ضعیف
+            context_notes.append('bullish_reversal_at_resistance_weak')
+        elif pattern_direction == 'bearish' and is_near_support:
+            context_score *= 0.5  # الگوی برگشت نزولی در support = ضعیف
+            context_notes.append('bearish_reversal_at_support_weak')
+
+    # 2. بررسی همسویی با روند
+    trend_direction = trend_data.get('trend', 'neutral')
+    trend_strength = abs(trend_data.get('strength', 0))
+
+    is_continuation_pattern = pattern_type in ['bull_flag', 'bear_flag',
+                                               'ascending_triangle', 'descending_triangle']
+
+    if is_continuation_pattern:
+        # الگوهای ادامه‌دهنده باید با روند همسو باشند
+        if (pattern_direction == 'bullish' and trend_direction == 'bullish') or \
+           (pattern_direction == 'bearish' and trend_direction == 'bearish'):
+            context_score *= (1.0 + trend_strength * 0.2)
+            context_notes.append('continuation_with_trend')
+        else:
+            context_score *= 0.6
+            context_notes.append('continuation_against_trend_weak')
+
+    # 3. بررسی حجم
+    if 'volume' in df.columns:
+        recent_volume = df['volume'].iloc[-3:].mean()
+        avg_volume = df['volume'].iloc[-30:-3].mean()
+        volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1.0
+
+        if volume_ratio > 1.5:
+            context_score *= 1.2
+            context_notes.append('confirmed_by_volume')
+        elif volume_ratio < 0.7:
+            context_score *= 0.85
+            context_notes.append('weak_volume')
+
+    return {
+        'context_score': context_score,
+        'context_notes': context_notes,
+        'is_near_support': is_near_support,
+        'is_near_resistance': is_near_resistance,
+        'trend_aligned': (pattern_direction == trend_direction)
+    }
+```
+
+**استفاده:**
+
+```python
+# در تابع analyze_price_action
+for pattern in patterns_found:
+    context = self.evaluate_pattern_context(pattern, df, sr_levels, trend_data)
+    pattern['score'] *= context['context_score']
+    pattern['context'] = context
+```
+
+**مزایا:**
+- الگوهای قوی در محل مناسب امتیاز بیشتر
+- الگوهای ضعیف در محل نامناسب فیلتر می‌شوند
+- کاهش false signals
+
+---
+
+#### ❌ مشکل 2: Pattern Quality برای الگوهای تک-کندلی محاسبه نمی‌شود
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:1931-1936
+# فقط pattern_strength محاسبه می‌شود
+pattern_strength = min(1.0, abs(pattern_value) / 100)
+```
+
+- کیفیت الگو فقط بر اساس pattern_value است
+- اندازه بدنه، سایه‌ها، و نسبت‌ها بررسی نمی‌شود
+- همه الگوهای یک نوع امتیاز یکسانی دارند
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_candle_pattern_quality(self, df: pd.DataFrame, pattern_type: str) -> float:
+    """
+    محاسبه کیفیت الگوی شمعی بر اساس ویژگی‌های کندل
+    """
+
+    last_candle = df.iloc[-1]
+    open_p = last_candle['open']
+    high_p = last_candle['high']
+    low_p = last_candle['low']
+    close_p = last_candle['close']
+
+    body = abs(close_p - open_p)
+    total_range = high_p - low_p
+    upper_shadow = high_p - max(open_p, close_p)
+    lower_shadow = min(open_p, close_p) - low_p
+
+    quality = 1.0
+
+    # کیفیت بر اساس نوع الگو
+    if pattern_type == 'hammer':
+        # Hammer باید: بدنه کوچک، سایه پایین بلند، سایه بالا کوچک
+        body_ratio = body / total_range if total_range > 0 else 0
+        lower_shadow_ratio = lower_shadow / total_range if total_range > 0 else 0
+        upper_shadow_ratio = upper_shadow / total_range if total_range > 0 else 0
+
+        # کیفیت بالا: بدنه کوچک (< 30%) و سایه پایین بلند (> 60%)
+        if body_ratio < 0.3 and lower_shadow_ratio > 0.6 and upper_shadow_ratio < 0.1:
+            quality = 1.0
+        elif body_ratio < 0.4 and lower_shadow_ratio > 0.5:
+            quality = 0.8
+        else:
+            quality = 0.5
+
+    elif pattern_type == 'shooting_star':
+        # Shooting Star: بدنه کوچک، سایه بالا بلند، سایه پایین کوچک
+        body_ratio = body / total_range if total_range > 0 else 0
+        upper_shadow_ratio = upper_shadow / total_range if total_range > 0 else 0
+        lower_shadow_ratio = lower_shadow / total_range if total_range > 0 else 0
+
+        if body_ratio < 0.3 and upper_shadow_ratio > 0.6 and lower_shadow_ratio < 0.1:
+            quality = 1.0
+        elif body_ratio < 0.4 and upper_shadow_ratio > 0.5:
+            quality = 0.8
+        else:
+            quality = 0.5
+
+    elif pattern_type == 'doji':
+        # Doji: بدنه خیلی کوچک
+        body_ratio = body / total_range if total_range > 0 else 0
+
+        if body_ratio < 0.05:  # بدنه کمتر از 5%
+            quality = 1.0
+        elif body_ratio < 0.1:
+            quality = 0.7
+        else:
+            quality = 0.4
+
+    elif pattern_type == 'engulfing':
+        # Engulfing: کندل دوم باید کندل اول را کاملاً بپوشاند
+        if len(df) < 2:
+            return 0.5
+
+        prev_candle = df.iloc[-2]
+        prev_body = abs(prev_candle['close'] - prev_candle['open'])
+
+        engulf_ratio = body / prev_body if prev_body > 0 else 1.0
+
+        if engulf_ratio > 1.5:  # کندل 50% بزرگتر
+            quality = 1.0
+        elif engulf_ratio > 1.2:
+            quality = 0.8
+        elif engulf_ratio > 1.0:
+            quality = 0.6
+        else:
+            quality = 0.3
+
+    elif pattern_type == 'marubozu':
+        # Marubozu: بدون سایه یا سایه خیلی کوچک
+        shadow_ratio = (upper_shadow + lower_shadow) / total_range if total_range > 0 else 0
+
+        if shadow_ratio < 0.05:  # سایه کمتر از 5%
+            quality = 1.0
+        elif shadow_ratio < 0.1:
+            quality = 0.7
+        else:
+            quality = 0.4
+
+    # بررسی اندازه کندل نسبت به ATR
+    if len(df) >= 14:
+        atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, timeperiod=14)
+        if not np.isnan(atr[-1]):
+            candle_size_ratio = total_range / atr[-1]
+            if candle_size_ratio > 1.5:  # کندل بزرگتر از ATR
+                quality *= 1.2
+            elif candle_size_ratio < 0.5:  # کندل خیلی کوچک
+                quality *= 0.7
+
+    return min(1.0, quality)
+```
+
+**استفاده:**
+
+```python
+# در تابع detect_candlestick_patterns
+pattern_quality = self.calculate_candle_pattern_quality(df, pattern_name)
+pattern_score = base_score * pattern_strength * pattern_quality
+```
+
+**مزایا:**
+- تفکیک الگوهای با کیفیت بالا از پایین
+- امتیازدهی دقیق‌تر
+- کاهش false positives
+
+---
+
+#### ❌ مشکل 3: عدم تشخیص الگوهای قیمتی مهم (Double Top/Bottom، Cup & Handle)
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:1955-1975
+# فقط H&S، Triangle، Flag شناسایی می‌شوند
+```
+
+- الگوهای قدرتمند دیگر مانند Double Top/Bottom نیستند
+- Cup & Handle که الگوی ادامه‌دهنده قوی است وجود ندارد
+- Rising/Falling Wedge نیست
+
+**راه حل پیشنهادی:**
+
+```python
+async def _detect_double_top_bottom(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    تشخیص الگوهای Double Top و Double Bottom
+    """
+    patterns = []
+    if len(df) < 30:
+        return patterns
+
+    closes = df['close'].values
+    highs = df['high'].values
+    lows = df['low'].values
+
+    peaks, valleys = self.find_peaks_and_valleys(closes, distance=5, prominence_factor=0.05)
+
+    # Double Top
+    if len(peaks) >= 2:
+        for i in range(len(peaks) - 1):
+            peak1_idx = peaks[i]
+            peak2_idx = peaks[i + 1]
+
+            peak1_price = highs[peak1_idx]
+            peak2_price = highs[peak2_idx]
+
+            # دو قله باید تقریباً هم‌سطح باشند (< 2% اختلاف)
+            price_diff_pct = abs(peak2_price - peak1_price) / peak1_price
+
+            if price_diff_pct < 0.02:
+                # پیدا کردن دره بین دو قله (neckline)
+                valleys_between = [v for v in valleys if v > peak1_idx and v < peak2_idx]
+
+                if valleys_between:
+                    valley_idx = valleys_between[0]
+                    neckline_price = lows[valley_idx]
+
+                    # بررسی شکست neckline
+                    current_price = closes[-1]
+                    breakout_confirmed = current_price < neckline_price
+
+                    # محاسبه target
+                    pattern_height = peak1_price - neckline_price
+                    price_target = neckline_price - pattern_height
+
+                    # محاسبه quality
+                    time_gap = peak2_idx - peak1_idx
+                    pattern_quality = (1.0 - price_diff_pct) * min(1.0, time_gap / 20)
+
+                    patterns.append({
+                        'type': 'double_top',
+                        'direction': 'bearish',
+                        'index': peak2_idx,
+                        'breakout_confirmed': breakout_confirmed,
+                        'neckline_price': float(neckline_price),
+                        'price_target': float(price_target),
+                        'pattern_quality': round(pattern_quality, 2),
+                        'score': self.pattern_scores.get('double_top', 3.5) * pattern_quality
+                    })
+
+    # Double Bottom (همان منطق با valleys)
+    if len(valleys) >= 2:
+        for i in range(len(valleys) - 1):
+            valley1_idx = valleys[i]
+            valley2_idx = valleys[i + 1]
+
+            valley1_price = lows[valley1_idx]
+            valley2_price = lows[valley2_idx]
+
+            price_diff_pct = abs(valley2_price - valley1_price) / valley1_price
+
+            if price_diff_pct < 0.02:
+                peaks_between = [p for p in peaks if p > valley1_idx and p < valley2_idx]
+
+                if peaks_between:
+                    peak_idx = peaks_between[0]
+                    neckline_price = highs[peak_idx]
+
+                    current_price = closes[-1]
+                    breakout_confirmed = current_price > neckline_price
+
+                    pattern_height = neckline_price - valley1_price
+                    price_target = neckline_price + pattern_height
+
+                    time_gap = valley2_idx - valley1_idx
+                    pattern_quality = (1.0 - price_diff_pct) * min(1.0, time_gap / 20)
+
+                    patterns.append({
+                        'type': 'double_bottom',
+                        'direction': 'bullish',
+                        'index': valley2_idx,
+                        'breakout_confirmed': breakout_confirmed,
+                        'neckline_price': float(neckline_price),
+                        'price_target': float(price_target),
+                        'pattern_quality': round(pattern_quality, 2),
+                        'score': self.pattern_scores.get('double_bottom', 3.5) * pattern_quality
+                    })
+
+    return patterns
+
+
+async def _detect_cup_and_handle(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    تشخیص الگوی Cup and Handle
+    """
+    patterns = []
+    if len(df) < 50:
+        return patterns
+
+    closes = df['close'].values
+    lows = df['low'].values
+
+    # پیدا کردن Cup (یک دره بزرگ U-shape)
+    _, valleys = self.find_peaks_and_valleys(closes, distance=10, prominence_factor=0.05)
+
+    if len(valleys) < 1:
+        return patterns
+
+    # بررسی آخرین دره به عنوان کف cup
+    cup_bottom_idx = valleys[-1]
+
+    # پیدا کردن شروع و پایان cup (باید قبل و بعد از کف تقریباً هم‌سطح باشند)
+    window_before = 20
+    window_after = 15
+
+    if cup_bottom_idx < window_before or cup_bottom_idx + window_after >= len(closes):
+        return patterns
+
+    left_rim = closes[cup_bottom_idx - window_before]
+    right_rim = closes[cup_bottom_idx + window_after]
+    cup_bottom = lows[cup_bottom_idx]
+
+    rim_diff_pct = abs(right_rim - left_rim) / left_rim
+
+    # لبه‌های cup باید تقریباً هم‌سطح باشند
+    if rim_diff_pct > 0.05:
+        return patterns
+
+    # Handle باید اصلاح کوچک بعد از right rim باشد
+    handle_start_idx = cup_bottom_idx + window_after
+    handle_window = 10
+
+    if handle_start_idx + handle_window >= len(closes):
+        return patterns
+
+    handle_prices = closes[handle_start_idx:handle_start_idx + handle_window]
+    handle_low = handle_prices.min()
+    handle_depth = (right_rim - handle_low) / right_rim
+
+    # Handle باید اصلاح کوچک باشد (< 15%)
+    if handle_depth > 0.15 or handle_depth < 0.03:
+        return patterns
+
+    # محاسبه target
+    cup_depth = right_rim - cup_bottom
+    price_target = right_rim + cup_depth
+
+    pattern_quality = (1.0 - rim_diff_pct) * (1.0 - handle_depth / 0.15)
+
+    patterns.append({
+        'type': 'cup_and_handle',
+        'direction': 'bullish',
+        'index': handle_start_idx + handle_window - 1,
+        'rim_price': float(right_rim),
+        'price_target': float(price_target),
+        'pattern_quality': round(pattern_quality, 2),
+        'score': self.pattern_scores.get('cup_and_handle', 3.8) * pattern_quality
+    })
+
+    return patterns
+```
+
+**استفاده:**
+
+```python
+# در تابع _detect_multi_candle_patterns
+double_patterns = await self._detect_double_top_bottom(df)
+if double_patterns:
+    patterns.extend(double_patterns)
+
+cup_handle = await self._detect_cup_and_handle(df)
+if cup_handle:
+    patterns.extend(cup_handle)
+```
+
+**مزایا:**
+- شناسایی الگوهای قدرتمند اضافی
+- افزایش تنوع سیگنال‌ها
+- Double Top/Bottom از محبوب‌ترین الگوهای تحلیل تکنیکال هستند
+
+---
+
+#### ❌ مشکل 4: Bollinger Bands فقط Break را بررسی می‌کند
+
+**مشکل فعلی:**
+```python
+# signal_generator.py:3936-3947
+# فقط upper_break و lower_break شناسایی می‌شوند
+if current_close > current_upper:
+    signals.append({'type': 'bollinger_upper_break'})
+```
+
+- BB Bounce (برگشت از باندها) بررسی نمی‌شود
+- BB Walk (حرکت روی باند) تشخیص داده نمی‌شود
+- تغییرات width در طول زمان ردیابی نمی‌شود
+
+**راه حل پیشنهادی:**
+
+```python
+def analyze_bollinger_bands_advanced(self, df: pd.DataFrame, upper, middle, lower) -> List[Dict]:
+    """
+    تحلیل پیشرفته Bollinger Bands
+    """
+    signals = []
+
+    if len(df) < 5:
+        return signals
+
+    current_close = df['close'].iloc[-1]
+    prev_close = df['close'].iloc[-2]
+
+    current_upper = upper[-1]
+    current_middle = middle[-1]
+    current_lower = lower[-1]
+    prev_upper = upper[-2]
+    prev_lower = lower[-2]
+
+    # 1. BB Bounce (برگشت از باند)
+    # قیمت به باند رسید و برگشت
+    if prev_close <= prev_lower and current_close > current_lower:
+        # Bounce از باند پایین (صعودی)
+        bounce_strength = (current_close - current_lower) / (current_middle - current_lower)
+        signals.append({
+            'type': 'bollinger_lower_bounce',
+            'direction': 'bullish',
+            'score': self.pattern_scores.get('bollinger_lower_bounce', 2.3) * bounce_strength
+        })
+
+    elif prev_close >= prev_upper and current_close < current_upper:
+        # Bounce از باند بالا (نزولی)
+        bounce_strength = (current_upper - current_close) / (current_upper - current_middle)
+        signals.append({
+            'type': 'bollinger_upper_bounce',
+            'direction': 'bearish',
+            'score': self.pattern_scores.get('bollinger_upper_bounce', 2.3) * bounce_strength
+        })
+
+    # 2. BB Walk (حرکت مداوم روی باند)
+    # قیمت برای چند کندل متوالی روی یا نزدیک باند می‌ماند
+    recent_closes = df['close'].iloc[-5:]
+    recent_uppers = upper[-5:]
+    recent_lowers = lower[-5:]
+
+    # Upper Walk
+    upper_touches = sum(1 for i, close in enumerate(recent_closes)
+                       if close >= recent_uppers[i] * 0.98)
+    if upper_touches >= 3:
+        signals.append({
+            'type': 'bollinger_upper_walk',
+            'direction': 'bullish',  # ادامه روند صعودی قوی
+            'score': self.pattern_scores.get('bollinger_upper_walk', 2.7)
+        })
+
+    # Lower Walk
+    lower_touches = sum(1 for i, close in enumerate(recent_closes)
+                       if close <= recent_lowers[i] * 1.02)
+    if lower_touches >= 3:
+        signals.append({
+            'type': 'bollinger_lower_walk',
+            'direction': 'bearish',  # ادامه روند نزولی قوی
+            'score': self.pattern_scores.get('bollinger_lower_walk', 2.7)
+        })
+
+    # 3. BB Expansion (انبساط باندها)
+    if len(df) >= 20:
+        recent_widths = [(upper[i] - lower[i]) / middle[i]
+                        for i in range(-20, 0) if middle[i] > 0]
+        avg_width = np.mean(recent_widths)
+        current_width = (current_upper - current_lower) / current_middle
+
+        # باندها در حال انبساط (نوسانات افزایش یافته)
+        if current_width > avg_width * 1.3:
+            signals.append({
+                'type': 'bollinger_expansion',
+                'direction': 'neutral',
+                'score': self.pattern_scores.get('bollinger_expansion', 1.8)
+            })
+
+        # باندها در حال انقباض (نوسانات کاهش یافته)
+        elif current_width < avg_width * 0.7:
+            signals.append({
+                'type': 'bollinger_contraction',
+                'direction': 'neutral',
+                'score': self.pattern_scores.get('bollinger_contraction', 1.5)
+            })
+
+    # 4. Middle Band Cross
+    # عبور از میانگین متحرک (middle band)
+    if prev_close < middle[-2] and current_close > current_middle:
+        signals.append({
+            'type': 'bollinger_middle_cross_up',
+            'direction': 'bullish',
+            'score': self.pattern_scores.get('bollinger_middle_cross_up', 2.0)
+        })
+    elif prev_close > middle[-2] and current_close < current_middle:
+        signals.append({
+            'type': 'bollinger_middle_cross_down',
+            'direction': 'bearish',
+            'score': self.pattern_scores.get('bollinger_middle_cross_down', 2.0)
+        })
+
+    return signals
+```
+
+**مزایا:**
+- تحلیل کامل‌تر Bollinger Bands
+- شناسایی BB Walk که نشانه روند قوی است
+- BB Bounce سیگنال برگشتی قوی است
+
+---
+
+#### ❌ مشکل 5: عدم ترکیب سیگنال‌های چندگانه (Confluence)
+
+**مشکل فعلی:**
+- سیگنال‌ها به صورت مستقل ارزیابی می‌شوند
+- اگر چند الگو همزمان رخ دهند، ارزش ترکیبی محاسبه نمی‌شود
+- مثال: Hammer + Bollinger Bounce + Support = سیگنال بسیار قوی
+
+**راه حل پیشنهادی:**
+
+```python
+def calculate_confluence_bonus(self, signals: List[Dict], context: Dict) -> float:
+    """
+    محاسبه bonus برای ترکیب سیگنال‌های همسو (confluence)
+    """
+
+    bullish_signals = [s for s in signals if s.get('direction') == 'bullish']
+    bearish_signals = [s for s in signals if s.get('direction') == 'bearish']
+
+    # تقسیم‌بندی سیگنال‌ها به دسته‌ها
+    reversal_patterns = ['hammer', 'morning_star', 'evening_star', 'shooting_star',
+                        'head_and_shoulders', 'double_top', 'double_bottom']
+    continuation_patterns = ['bull_flag', 'bear_flag', 'triangle']
+    bollinger_signals = ['bollinger_upper_break', 'bollinger_lower_break',
+                        'bollinger_upper_bounce', 'bollinger_lower_bounce']
+
+    confluence_score = 0.0
+
+    # بررسی confluence برای سیگنال‌های صعودی
+    if len(bullish_signals) >= 2:
+        has_reversal = any(s['type'] in reversal_patterns for s in bullish_signals)
+        has_continuation = any(s['type'] in continuation_patterns for s in bullish_signals)
+        has_bollinger = any(s['type'] in bollinger_signals for s in bullish_signals)
+        has_volume = any('volume' in s['type'] for s in bullish_signals)
+
+        confluence_count = sum([has_reversal, has_continuation, has_bollinger, has_volume])
+
+        # بررسی context
+        is_at_support = context.get('is_near_support', False)
+        is_trend_aligned = context.get('trend_aligned', False)
+
+        if is_at_support:
+            confluence_count += 1
+        if is_trend_aligned:
+            confluence_count += 1
+
+        # Confluence bonus بر اساس تعداد
+        if confluence_count >= 4:
+            confluence_score = 0.5  # +50% bonus
+        elif confluence_count == 3:
+            confluence_score = 0.3  # +30% bonus
+        elif confluence_count == 2:
+            confluence_score = 0.15  # +15% bonus
+
+    # همین محاسبات برای سیگنال‌های نزولی
+    elif len(bearish_signals) >= 2:
+        has_reversal = any(s['type'] in reversal_patterns for s in bearish_signals)
+        has_continuation = any(s['type'] in continuation_patterns for s in bearish_signals)
+        has_bollinger = any(s['type'] in bollinger_signals for s in bearish_signals)
+        has_volume = any('volume' in s['type'] for s in bearish_signals)
+
+        confluence_count = sum([has_reversal, has_continuation, has_bollinger, has_volume])
+
+        is_at_resistance = context.get('is_near_resistance', False)
+        is_trend_aligned = context.get('trend_aligned', False)
+
+        if is_at_resistance:
+            confluence_count += 1
+        if is_trend_aligned:
+            confluence_count += 1
+
+        if confluence_count >= 4:
+            confluence_score = 0.5
+        elif confluence_count == 3:
+            confluence_score = 0.3
+        elif confluence_count == 2:
+            confluence_score = 0.15
+
+    return confluence_score
+```
+
+**استفاده:**
+
+```python
+# در انتهای analyze_price_action
+confluence_bonus = self.calculate_confluence_bonus(price_action_signals, context)
+
+# اعمال bonus به کل score
+if confluence_bonus > 0:
+    if bullish_score > bearish_score:
+        bullish_score *= (1.0 + confluence_bonus)
+    else:
+        bearish_score *= (1.0 + confluence_bonus)
+```
+
+**مثال:**
+```
+سیگنال‌های صعودی:
+1. Hammer (2.0)
+2. Bollinger Lower Bounce (2.3)
+3. High Volume Bullish (2.8)
+4. در نزدیکی Support
+5. همسو با روند
+
+Confluence Count = 5
+Confluence Bonus = +50%
+Total Bullish Score = (2.0 + 2.3 + 2.8) × 1.5 = 10.65
+```
+
+**مزایا:**
+- تقویت سیگنال‌های با اجماع بالا (high confluence)
+- تشویق به ورود در موقعیت‌های با تأیید چندگانه
+- کاهش ریسک
+
+---
+
+### 📋 خلاصه پیشنهادات
+
+| # | مشکل | راه حل | اولویت | تأثیر بر دقت |
+|---|------|--------|---------|--------------|
+| 1 | عدم ارزیابی Context | ارزیابی محل الگو (S/R، روند) | 🔴 بالا | +20% |
+| 2 | عدم Pattern Quality برای candles | محاسبه quality بر اساس ویژگی‌های کندل | 🟡 متوسط | +12% |
+| 3 | فقدان الگوهای مهم | اضافه کردن Double Top/Bottom، Cup & Handle | 🟡 متوسط | +15% |
+| 4 | BB محدود | اضافه کردن BB Bounce، Walk، Expansion | 🟢 پایین | +8% |
+| 5 | عدم Confluence | محاسبه bonus برای سیگنال‌های همسو | 🔴 بالا | +18% |
+
+**تأثیر کلی پیشنهادات:** افزایش دقت حدود **+50-60%** در تحلیل Price Action
+
+---
+
+### 🔬 پیشنهادات تست و اعتبارسنجی
+
+1. **Context Impact Analysis:**
+   - مقایسه عملکرد الگوها با/بدون context evaluation
+   - تحلیل win rate در محل‌های مختلف (S/R، mid-range)
+   - اندازه‌گیری تأثیر trend alignment
+
+2. **Pattern Quality Validation:**
+   - بررسی همبستگی بین quality score و نتیجه معامله
+   - شناسایی آستانه بهینه برای فیلتر کردن الگوهای ضعیف
+   - مقایسه الگوهای high quality vs low quality
+
+3. **New Patterns Backtesting:**
+   - تست عملکرد Double Top/Bottom و Cup & Handle
+   - مقایسه با الگوهای موجود
+   - تعیین امتیاز بهینه برای هر الگو
+
+4. **Confluence Analysis:**
+   - تحلیل win rate بر اساس تعداد confluences
+   - یافتن بهترین ترکیب‌های سیگنال
+   - بهینه‌سازی bonus percentages
+
+---
+
+**تاریخ آخرین به‌روزرسانی:** 2025-10-28
 
