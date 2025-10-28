@@ -2991,57 +2991,422 @@ score.harmonic_pattern_score = 1.0 + (harmonic_count * 0.2)
 **محل:** `signal_generator.py:2666-2768`
 
 ```python
-analysis_data['price_channels'] = self.detect_price_channels(df)
+analysis_data['price_channels'] = self.detect_price_channels(
+    df,
+    lookback=100,
+    min_touches=3  # حداقل تعداد تماس با خطوط
+)
 ```
 
-**چه کاری انجام می‌شود؟**
+کانال‌های قیمتی نواحی‌ای هستند که قیمت بین دو خط موازی (بالا و پایین) حرکت می‌کند. شناسایی کانال برای پیش‌بینی **bounce** (بازگشت از دیوار) یا **breakout** (شکست) استفاده می‌شود.
 
-1. **رسم خطوط کانال:**
-   - یافتن Peaks (قله‌ها) برای خط بالایی
-   - یافتن Valleys (دره‌ها) برای خط پایینی
-   - استفاده از Regression برای رسم خطوط
+---
 
-2. **تعیین جهت کانال:**
-   ```python
-   channel_direction = 'ascending'    # کانال صعودی
-   channel_direction = 'descending'   # کانال نزولی
-   channel_direction = 'horizontal'   # کانال افقی (Range)
-   ```
+##### الگوریتم شناسایی (5 مرحله)
 
-3. **محاسبه موقعیت قیمت در کانال:**
-   ```python
-   position_in_channel = (current_price - lower_line) / channel_width
-   ```
-   - 0.0 = کف کانال
-   - 0.5 = وسط کانال
-   - 1.0 = سقف کانال
+**مرحله 1: شناسایی Peaks و Valleys**
 
-4. **شناسایی Breakout (شکست کانال):**
-   - قیمت از کانال خارج شده؟
-   - حجم معاملات افزایش یافته؟
-   - Breakout تأیید شده است؟
+**کد:** `signal_generator.py:2680-2684`
 
-**خروجی:**
+```python
+peaks, valleys = self.find_peaks_and_valleys(
+    closes,
+    distance=5,
+    prominence_factor=0.1
+)
+```
+
+**شرط:** حداقل `min_touches` (پیش‌فرض: 3) peak و valley نیاز است.
+
+---
+
+**مرحله 2: رسم خطوط با Linear Regression**
+
+**کد:** `signal_generator.py:2687-2695`
+
+```python
+# خط بالایی (Upper Line) - اتصال Peaks
+if len(peaks) >= 2:
+    up_slope, up_intercept = np.polyfit(peak_indices, peak_values, 1)
+
+# خط پایینی (Lower Line) - اتصال Valleys
+if len(valleys) >= 2:
+    down_slope, down_intercept = np.polyfit(valley_indices, valley_values, 1)
+```
+
+**Regression خطی:**
+```
+y = slope * x + intercept
+```
+
+**مثال:**
+```python
+# Peaks at: (10, 50000), (30, 50500), (50, 51000)
+up_slope = 20  # شیب صعودی
+up_intercept = 49800
+
+# خط بالایی در زمان x:
+upper_line(x) = 20 * x + 49800
+
+# در x=60: upper = 20*60 + 49800 = 51000
+```
+
+---
+
+**مرحله 3: محاسبه ویژگی‌های کانال**
+
+**کد:** `signal_generator.py:2697-2704`
+
+```python
+# عرض کانال
+last_idx = len(closes) - 1
+up_line_current = up_slope * last_idx + up_intercept
+down_line_current = down_slope * last_idx + down_intercept
+channel_width = up_line_current - down_line_current
+
+# جهت کانال
+channel_slope = (up_slope + down_slope) / 2
+if channel_slope > 0.001:
+    channel_direction = 'ascending'      # صعودی ↗
+elif channel_slope < -0.001:
+    channel_direction = 'descending'     # نزولی ↘
+else:
+    channel_direction = 'horizontal'     # افقی (Range) →
+```
+
+**3 نوع کانال:**
+
+| نوع | شیب میانگین | ویژگی | استراتژی |
+|-----|-------------|--------|----------|
+| **Ascending** | > 0.001 | صعودی | خرید در کف، نگهداری |
+| **Descending** | < -0.001 | نزولی | فروش در سقف، شورت |
+| **Horizontal** | -0.001 to 0.001 | Range | خرید کف/فروش سقف |
+
+---
+
+**مرحله 4: ارزیابی کیفیت کانال (Quality)**
+
+**کد:** `signal_generator.py:2709-2730`
+
+```python
+# محاسبه انحراف معیار از خطوط
+up_dev = np.std(peak_values - up_line)
+down_dev = np.std(valley_values - down_line)
+
+# شمارش تماس‌های معتبر
+valid_up_touches = sum(1 for i, v in zip(peak_indices, peak_values)
+                       if abs(v - (up_slope * i + up_intercept)) < up_dev)
+
+valid_down_touches = sum(1 for i, v in zip(valley_indices, valley_values)
+                         if abs(v - (down_slope * i + down_intercept)) < down_dev)
+
+# محاسبه کیفیت
+channel_quality = min(1.0, (valid_up_touches + valid_down_touches) / (min_touches * 2))
+```
+
+**فرمول کیفیت:**
+```
+quality = min(1.0, total_valid_touches / (min_touches × 2))
+```
+
+**مثال:**
+```python
+min_touches = 3  # نیاز: حداقل 6 تماس (3 بالا + 3 پایین)
+
+valid_up_touches = 5    # 5 peak نزدیک خط بالا
+valid_down_touches = 4  # 4 valley نزدیک خط پایین
+total = 9
+
+quality = min(1.0, 9 / 6) = min(1.0, 1.5) = 1.0  # کیفیت عالی ✓
+```
+
+**فیلتر کیفیت:**
+```python
+if quality >= self.channel_quality_threshold:  # پیش‌فرض: 0.6
+    # کانال قبول شد
+```
+
+---
+
+**مرحله 5: تشخیص موقعیت و Breakout**
+
+**کد:** `signal_generator.py:2722-2727`
+
+```python
+# موقعیت در کانال (0.0 = کف, 1.0 = سقف)
+position_in_channel = (last_close - down_line_current) / channel_width
+
+# تشخیص Breakout
+is_breakout_up = last_close > up_line_current + up_dev
+is_breakout_down = last_close < down_line_current - down_dev
+```
+
+**موقعیت در کانال:**
+
+| Position | محدوده | معنی | سیگنال |
+|----------|--------|------|--------|
+| **< 0.2** | کف کانال | احتمال صعود | Bullish Bounce |
+| **0.2-0.8** | وسط کانال | خنثی | Wait |
+| **> 0.8** | سقف کانال | احتمال نزول | Bearish Bounce |
+| **> 1.0** | بالای کانال | شکست صعودی | Bullish Breakout |
+| **< 0.0** | زیر کانال | شکست نزولی | Bearish Breakout |
+
+**Breakout Condition:**
+```
+Breakout Up: price > upper_line + std_deviation
+Breakout Down: price < lower_line - std_deviation
+```
+
+---
+
+##### خروجی کامل
+
 ```python
 {
-    'channel_direction': 'ascending',
-    'position_in_channel': 0.15,  # نزدیک کف کانال
-    'upper_line': 50500,
-    'lower_line': 49500,
-    'channel_width': 1000,
-    'is_breakout_up': False,
-    'is_breakout_down': False,
-    'touches_upper': 5,  # تعداد برخورد با خط بالا
-    'touches_lower': 6,  # تعداد برخورد با خط پایین
-    'channel_quality': 0.88  # کیفیت کانال
+    'status': 'ok',
+
+    'channels': [
+        {
+            'type': 'ascending_channel',
+            'direction': 'ascending',
+
+            # پارامترهای خطوط
+            'upper_slope': 20.5,
+            'upper_intercept': 49800.0,
+            'lower_slope': 18.2,
+            'lower_intercept': 48900.0,
+
+            # ویژگی‌ها
+            'width': 1100.0,              # عرض کانال
+            'quality': 0.88,              # کیفیت (0-1)
+            'position_in_channel': 0.15,  # موقعیت فعلی (نزدیک کف)
+
+            # تماس‌ها
+            'up_touches': 5,              # تعداد تماس با خط بالا
+            'down_touches': 6,            # تعداد تماس با خط پایین
+
+            # Breakout
+            'breakout': None              # 'up', 'down', یا None
+        }
+    ],
+
+    # سیگنال (اگر وجود داشته باشد)
+    'signal': {
+        'type': 'channel_bounce',     # یا 'channel_breakout'
+        'direction': 'bullish',       # یا 'bearish'
+        'score': 2.64                 # 3.0 × quality (0.88)
+    },
+
+    'details': {}
 }
 ```
 
-**امتیازدهی:**
-- قیمت در کف کانال صعودی + سیگنال خرید → **+20 تا +30 امتیاز**
-- قیمت در سقف کانال نزولی + سیگنال فروش → **+20 تا +30 امتیاز**
-- Breakout تأیید شده با حجم بالا → **+35 تا +50 امتیاز**
-- کانال با کیفیت بالا → **×1.2 ضریب تقویت**
+---
+
+##### امتیازدهی
+
+**کد:** `signal_generator.py:2749-2760, 5315-5324`
+
+**2 نوع سیگنال:**
+
+**1. Channel Breakout (شکست کانال)**
+
+**کد:** `2749-2754`
+
+```python
+if breakout_direction == 'up':
+    results['signal'] = {
+        'type': 'channel_breakout',
+        'direction': 'bullish',
+        'score': 4.0 * channel_quality
+    }
+elif breakout_direction == 'down':
+    results['signal'] = {
+        'type': 'channel_breakout',
+        'direction': 'bearish',
+        'score': 4.0 * channel_quality
+    }
+```
+
+**جدول امتیازات Breakout:**
+
+| Quality | Base Score | امتیاز نهایی | قدرت |
+|---------|-----------|--------------|------|
+| 1.0 | 4.0 | **4.0** | بسیار قوی |
+| 0.8 | 4.0 | **3.2** | قوی |
+| 0.6 | 4.0 | **2.4** | متوسط |
+
+---
+
+**2. Channel Bounce (بازگشت از دیوار)**
+
+**کد:** `2755-2760`
+
+```python
+elif position_in_channel < 0.2:  # نزدیک کف
+    results['signal'] = {
+        'type': 'channel_bounce',
+        'direction': 'bullish',
+        'score': 3.0 * channel_quality
+    }
+elif position_in_channel > 0.8:  # نزدیک سقف
+    results['signal'] = {
+        'type': 'channel_bounce',
+        'direction': 'bearish',
+        'score': 3.0 * channel_quality
+    }
+```
+
+**جدول امتیازات Bounce:**
+
+| Position | Quality | Base Score | امتیاز نهایی | نوع |
+|----------|---------|-----------|--------------|-----|
+| < 0.2 | 1.0 | 3.0 | **3.0** | Bullish Bounce |
+| < 0.2 | 0.8 | 3.0 | **2.4** | Bullish Bounce |
+| > 0.8 | 1.0 | 3.0 | **3.0** | Bearish Bounce |
+| > 0.8 | 0.8 | 3.0 | **2.4** | Bearish Bounce |
+
+**محدوده کل:** 2.4 تا 4.0
+
+**⚠️ نکته:** Breakout قوی‌تر از Bounce است (4.0 vs 3.0)
+
+---
+
+##### کاربردها
+
+**1. تأیید Reversal Signals:**
+
+**کد:** `signal_generator.py:3746-3751`
+
+```python
+channel_signal = channel_data.get('signal', {})
+
+if channel_signal:
+    signal_type = channel_signal['type']
+    if signal_type == 'channel_bounce':
+        signal_score = channel_signal['score'] / 3.0  # normalize
+        strength += signal_score
+        is_reversal = True
+```
+
+**استفاده:** سیگنال Channel Bounce برای **تقویت Reversal** استفاده می‌شود.
+
+---
+
+**2. امتیازدهی در Multi-Timeframe:**
+
+**کد:** `signal_generator.py:5315-5324`
+
+```python
+for tf, result in analysis.items():
+    channel_data = result.get('price_channels', {})
+    channel_signal = channel_data.get('signal', {})
+
+    if channel_signal:
+        signal_type = channel_signal['type']
+        signal_direction = channel_signal['direction']
+        signal_score = channel_signal['score'] * tf_weight
+
+        if signal_direction == 'bullish':
+            bullish_score += signal_score
+        elif signal_direction == 'bearish':
+            bearish_score += signal_score
+```
+
+---
+
+##### مثال واقعی
+
+**سناریو:** BTC/USDT در کانال صعودی
+
+```python
+# داده‌های کانال
+{
+    'type': 'ascending_channel',
+    'direction': 'ascending',
+
+    'upper_slope': 25,          # شیب صعودی
+    'upper_intercept': 49500,
+    'lower_slope': 22,
+    'lower_intercept': 48000,
+
+    'width': 1500,              # عرض کانال فعلی
+    'quality': 0.92,            # کیفیت بالا (92%)
+    'position_in_channel': 0.12, # نزدیک کف (12%)
+
+    'up_touches': 6,            # 6 بار سقف تست شده
+    'down_touches': 7,          # 7 بار کف تست شده
+    'breakout': None
+}
+
+# محاسبه خطوط در کندل فعلی (idx=100):
+upper_line = 25 * 100 + 49500 = 52000
+lower_line = 22 * 100 + 48000 = 50200
+current_price = 50380
+
+# موقعیت:
+position = (50380 - 50200) / (52000 - 50200) = 180 / 1800 = 0.10
+# یعنی 10% از کف → نزدیک کف! ✓
+
+# سیگنال:
+{
+    'type': 'channel_bounce',
+    'direction': 'bullish',
+    'score': 3.0 * 0.92 = 2.76
+}
+
+# استراتژی:
+Entry: 50380 (کف کانال)
+TP: 51800 (80% کانال)
+SL: 50100 (زیر کانال)
+
+Risk: 50380 - 50100 = 280
+Reward: 51800 - 50380 = 1420
+RR = 5.07:1 ✓✓✓
+```
+
+**اگر Breakout اتفاق بیفتد:**
+```python
+# قیمت به 52200 می‌رسد (بالاتر از 52000)
+current_price = 52200
+is_breakout_up = 52200 > 52000 + 150 (std) = True ✓
+
+# سیگنال:
+{
+    'type': 'channel_breakout',
+    'direction': 'bullish',
+    'score': 4.0 * 0.92 = 3.68  # قوی‌تر!
+}
+
+# استراتژی Breakout:
+Entry: 52200
+TP: 53700 (ارتفاع کانال اضافه شود: 52200 + 1500)
+SL: 51950 (بازگشت به داخل کانال)
+
+Risk: 250
+Reward: 1500
+RR = 6.0:1 ✓✓✓
+```
+
+---
+
+##### نکات کلیدی
+
+1. **Linear Regression:** خطوط با regression خطی رسم می‌شوند (np.polyfit)
+
+2. **Quality-Based Filtering:** فقط کانال‌های با quality >= 0.6 قبول می‌شوند
+
+3. **3 نوع کانال:** Ascending (صعودی), Descending (نزولی), Horizontal (Range)
+
+4. **Position Matters:** موقعیت در کانال (0-1) برای تشخیص Bounce استفاده می‌شود
+
+5. **Breakout > Bounce:** شکست کانال امتیاز بیشتری دارد (4.0 vs 3.0)
+
+6. **Touch Count:** کانال‌های با تماس بیشتر → کیفیت بالاتر
+
+7. **Std Deviation:** برای تشخیص Breakout از انحراف معیار استفاده می‌شود
+
+8. **⚠️ محدودیت:** فقط **یک کانال اصلی** شناسایی می‌شود (بهترین)
 
 ---
 
