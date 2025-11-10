@@ -3085,11 +3085,42 @@ def evaluate_pattern_context(self, pattern: Dict, df: pd.DataFrame,
 **استفاده:**
 
 ```python
-# در تابع analyze_price_action
-for pattern in patterns_found:
-    context = self.evaluate_pattern_context(pattern, df, sr_levels, trend_data)
-    pattern['score'] *= context['context_score']
-    pattern['context'] = context
+# تغییر امضای تابع analyze_price_action
+async def analyze_price_action(self, df: pd.DataFrame,
+                                sr_levels: Optional[Dict] = None,
+                                trend_data: Optional[Dict] = None) -> Dict[str, Any]:
+    """Analyze price action including candlestick patterns and Bollinger Bands."""
+    results = {'status': 'ok', 'direction': 'neutral', 'signals': [], 'details': {}, 'atr': None}
+
+    # ... کد موجود ...
+
+    # Detect candlestick patterns
+    candle_patterns = await self.detect_candlestick_patterns(df)
+
+    # ارزیابی context برای الگوها
+    if sr_levels is None:
+        sr_levels = self.detect_support_resistance(df, lookback=50)
+
+    for pattern in candle_patterns:
+        if sr_levels and trend_data:
+            context = self.evaluate_pattern_context(pattern, df, sr_levels, trend_data)
+            pattern['score'] *= context['context_score']
+            pattern['context'] = context
+
+    # ... ادامه کد ...
+```
+
+**تغییر در فراخوانی:**
+
+```python
+# در تابع analyze_single_timeframe (خط 4697-4733)
+# قبل از فراخوانی analyze_price_action، trend و S/R را محاسبه کن
+
+trend_data = analysis_data.get('trend', {})
+sr_data = analysis_data.get('support_resistance', {})
+
+# فراخوانی با پارامترهای جدید
+analysis_data['price_action'] = await self.analyze_price_action(df, sr_data, trend_data)
 ```
 
 **مزایا:**
@@ -3647,7 +3678,34 @@ def calculate_confluence_bonus(self, signals: List[Dict], context: Dict) -> floa
 
 ```python
 # در انتهای analyze_price_action
-confluence_bonus = self.calculate_confluence_bonus(price_action_signals, context)
+# ساخت context کلی
+overall_context = {
+    'is_near_support': False,
+    'is_near_resistance': False,
+    'trend_aligned': False
+}
+
+if sr_levels:
+    current_price = df['close'].iloc[-1]
+    support_levels = sr_levels.get('support_levels', [])
+    resistance_levels = sr_levels.get('resistance_levels', [])
+
+    overall_context['is_near_support'] = any(
+        abs(current_price - s['price']) / current_price < 0.01
+        for s in support_levels
+    )
+    overall_context['is_near_resistance'] = any(
+        abs(current_price - r['price']) / current_price < 0.01
+        for r in resistance_levels
+    )
+
+if trend_data:
+    trend_direction = trend_data.get('trend', 'neutral')
+    direction = 'bullish' if bullish_score > bearish_score else 'bearish'
+    overall_context['trend_aligned'] = (direction == trend_direction)
+
+# محاسبه confluence
+confluence_bonus = self.calculate_confluence_bonus(price_action_signals, overall_context)
 
 # اعمال bonus به کل score
 if confluence_bonus > 0:
