@@ -4526,7 +4526,7 @@ if not self.vol_enabled or df is None or len(df) < max(self.vol_atr_period, self
 
 ### 4.2 نحوه تشخیص رژیم بازار
 
-**محل:** `market_regime_detector.py:416-590` (کلاس MarketRegimeDetector)
+**محل:** `market_regime_detector.py:82-646` (کلاس MarketRegimeDetector)
 
 ```python
 regime_result = self.regime_detector.detect_regime(df)
@@ -4536,7 +4536,7 @@ regime_result = self.regime_detector.detect_regime(df)
 
 #### مرحله 1: محاسبه اندیکاتورها
 
-**محل در کد:** `market_regime_detector.py:226-390`
+**محل در کد:** `market_regime_detector.py:193-282`
 
 ```python
 df_with_indicators, success = self._calculate_indicators(df)
@@ -4547,10 +4547,10 @@ df_with_indicators, success = self._calculate_indicators(df)
 ##### 1. ADX و DI (Average Directional Index)
 
 ```python
-# market_regime_detector.py:253-259
-adx = talib.ADX(high, low, close, timeperiod=14)
-plus_di = talib.PLUS_DI(high, low, close, timeperiod=14)
-minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
+# market_regime_detector.py:212-231
+adx = talib.ADX(high, low, close, timeperiod=self.adx_period)  # پیش‌فرض: 14
+plus_di = talib.PLUS_DI(high, low, close, timeperiod=self.adx_period)
+minus_di = talib.MINUS_DI(high, low, close, timeperiod=self.adx_period)
 ```
 
 **ADX چه می‌گوید؟**
@@ -4568,8 +4568,8 @@ minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
 ##### 2. ATR و ATR% (Average True Range)
 
 ```python
-# market_regime_detector.py:261-268
-atr = talib.ATR(high, low, close, timeperiod=20)
+# market_regime_detector.py:234-242
+atr = talib.ATR(high, low, close, timeperiod=self.volatility_period)  # پیش‌فرض: 20
 atr_percent = (atr / close) * 100
 ```
 
@@ -4588,13 +4588,12 @@ atr_percent = (atr / close) * 100
 ##### 3. Bollinger Bands Width
 
 ```python
-# market_regime_detector.py:270-279
+# market_regime_detector.py:245-254
 upper, middle, lower = talib.BBANDS(
     close,
-    timeperiod=20,
-    nbdevup=2,
-    nbdevdn=2,
-    matype=0
+    timeperiod=self.bollinger_period,  # پیش‌فرض: 20
+    nbdevup=self.bollinger_std,        # پیش‌فرض: 2
+    nbdevdn=self.bollinger_std
 )
 bb_width = ((upper - lower) / middle) * 100
 ```
@@ -4609,8 +4608,8 @@ bb_width = ((upper - lower) / middle) * 100
 ##### 4. RSI (Relative Strength Index)
 
 ```python
-# market_regime_detector.py:281-282
-rsi = talib.RSI(close, timeperiod=14)
+# market_regime_detector.py:257
+rsi = talib.RSI(close, timeperiod=self.rsi_period)  # پیش‌فرض: 14
 ```
 
 **کاربرد RSI در تشخیص رژیم:**
@@ -4623,17 +4622,13 @@ rsi = talib.RSI(close, timeperiod=14)
 ##### 5. Volume Analysis (اختیاری)
 
 ```python
-# market_regime_detector.py:284-306
-if self.use_volume_analysis and 'volume' in df.columns:
-    # محاسبه تغییرات حجم
-    volume_ma = df['volume'].rolling(window=20).mean()
-    volume_ratio = df['volume'] / volume_ma
-    volume_change = df['volume'].pct_change()
-
-    # همبستگی قیمت و حجم
-    correlation = df['close'].pct_change().iloc[-20:].corr(
-        df['volume'].pct_change().iloc[-20:]
-    )
+# market_regime_detector.py:260-265
+if 'volume' in df.columns and self.use_volume_analysis:
+    volume_change = df['volume'].pct_change(5) * 100
+    # محاسبه میانگین متحرک حجم
+    volume_sma = talib.SMA(df['volume'].values, timeperiod=20)
+    # نسبت حجم فعلی به میانگین
+    volume_ratio = df['volume'] / volume_sma
 ```
 
 **کاربرد Volume:**
@@ -4647,7 +4642,7 @@ if self.use_volume_analysis and 'volume' in df.columns:
 
 ##### 2.1 تشخیص Breakout (شکست)
 
-**محل در کد:** `market_regime_detector.py:332-390`
+**محل در کد:** `market_regime_detector.py:284-327`
 
 ```python
 is_breakout, breakout_direction = self._detect_breakout(df)
@@ -4688,7 +4683,7 @@ if current_close > recent_high:
 
 ##### 2.2 تشخیص Choppy Market (بازار آشفته)
 
-**محل در کد:** `market_regime_detector.py:392-414`
+**محل در کد:** `market_regime_detector.py:329-367`
 
 ```python
 is_choppy = self._is_choppy_market(df)
@@ -4719,20 +4714,20 @@ if direction_change_rate > self.choppy_threshold:  # 0.3 = 30%
 
 #### مرحله 3: تعیین رژیم نهایی
 
-**محل در کد:** `market_regime_detector.py:484-508`
+**محل در کد:** `market_regime_detector.py:416-591` (تابع _detect_regime_internal)
 
 رژیم بازار از **ترکیب** اندیکاتورها و حالت‌های خاص تعیین می‌شود:
 
 ```python
-# گام 1: تعیین قدرت روند (بر اساس ADX)
-if current_adx > 25:
+# گام 1: تعیین قدرت روند (بر اساس ADX) - خطوط 459-463
+if current_adx > self.strong_trend_threshold:  # پیش‌فرض: 25
     trend_strength = 'strong'
-elif current_adx > 20:
+elif current_adx > self.weak_trend_threshold:  # پیش‌فرض: 20
     trend_strength = 'weak'
 else:
     trend_strength = 'no_trend'
 
-# گام 2: تعیین جهت روند (بر اساس DI)
+# گام 2: تعیین جهت روند (بر اساس DI) - خطوط 465-469
 if current_plus_di > current_minus_di:
     trend_direction = 'bullish'
 elif current_minus_di > current_plus_di:
@@ -4740,15 +4735,15 @@ elif current_minus_di > current_plus_di:
 else:
     trend_direction = 'neutral'
 
-# گام 3: تعیین نوسان (بر اساس ATR%)
-if current_atr_percent > 1.5:
+# گام 3: تعیین نوسان (بر اساس ATR%) - خطوط 472-476
+if current_atr_percent > self.high_volatility_threshold:  # پیش‌فرض: 1.5
     volatility_level = 'high'
-elif current_atr_percent < 0.5:
+elif current_atr_percent < self.low_volatility_threshold:  # پیش‌فرض: 0.5
     volatility_level = 'low'
 else:
     volatility_level = 'normal'
 
-# گام 4: ترکیب برای تعیین رژیم نهایی
+# گام 4: ترکیب برای تعیین رژیم نهایی - خطوط 484-508
 if is_breakout:
     regime = 'breakout'
 elif is_choppy:
