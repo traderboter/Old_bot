@@ -2250,22 +2250,24 @@ analysis_data['price_action'] = await self.analyze_price_action(df)
 
 سیستم با استفاده از **TA-Lib** این الگوها را شناسایی می‌کند:
 
-| الگو | نام فارسی | جهت | امتیاز پایه | نوع سیگنال |
+| الگو | نام فارسی | جهت | امتیاز پایه (از config) | نوع سیگنال |
 |------|-----------|-----|------------|-----------|
-| `hammer` | چکش | Bullish | **2.0** | برگشتی صعودی |
-| `inverted_hammer` | چکش وارونه | Bullish | **2.0** | برگشتی صعودی |
-| `engulfing` | پوششی | Neutral* | **2.5** | قوی (جهت بستگی به value دارد) |
-| `morning_star` | ستاره صبحگاهی | Bullish | **3.0** | برگشتی قوی صعودی |
-| `evening_star` | ستاره عصرگاهی | Bearish | **3.0** | برگشتی قوی نزولی |
-| `harami` | حامله | Neutral* | **1.8** | تردید/برگشت |
-| `doji` | دوجی | Neutral | **1.5** | تردید بازار |
-| `dragonfly_doji` | دوجی سنجاقک | Bullish | **2.2** | برگشتی صعودی |
-| `gravestone_doji` | دوجی سنگ قبر | Bearish | **2.2** | برگشتی نزولی |
-| `shooting_star` | ستاره دنباله‌دار | Bearish | **2.3** | برگشتی نزولی |
-| `marubozu` | مارابوزو | Neutral* | **2.0** | قوی (بدون سایه) |
-| `hanging_man` | مرد آویزان | Bearish | **2.1** | برگشتی نزولی |
+| `hammer` | چکش | Bullish | **1.0** | برگشتی صعودی |
+| `inverted_hammer` | چکش وارونه | Bullish | **0.75** | برگشتی صعودی |
+| `engulfing` | پوششی | Neutral* | **1.25** | قوی (جهت بستگی به value دارد) |
+| `morning_star` | ستاره صبحگاهی | Bullish | **1.5** | برگشتی قوی صعودی |
+| `evening_star` | ستاره عصرگاهی | Bearish | **1.5** | برگشتی قوی نزولی |
+| `harami` | حامله | Neutral* | **0.85** | تردید/برگشت |
+| `doji` | دوجی | Neutral | **0.25** | تردید بازار |
+| `dragonfly_doji` | دوجی سنجاقک | Bullish | **0.75** | برگشتی صعودی |
+| `gravestone_doji` | دوجی سنگ قبر | Bearish | **0.75** | برگشتی نزولی |
+| `shooting_star` | ستاره دنباله‌دار | Bearish | **0.85** | برگشتی نزولی |
+| `marubozu` | مارابوزو | Neutral* | **2.0** (default) | قوی (بدون سایه) |
+| `hanging_man` | مرد آویزان | Bearish | **0.85** | برگشتی نزولی |
 
 *جهت Neutral به معنی است که جهت الگو توسط خود کتابخانه تعیین می‌شود (بر اساس value مثبت/منفی).
+
+**⚠️ نکته:** امتیازات بالا از `config.yaml:pattern_scores` خوانده می‌شوند. برای الگوهایی که در config تعریف نشده‌اند (مثل `marubozu`)، مقدار پیش‌فرض **2.0** استفاده می‌شود (خط 1936).
 
 **محاسبه قدرت و امتیاز:**
 
@@ -2288,8 +2290,8 @@ Final Score = Base Score × Pattern Strength
 ```
 Hammer detected: pattern_value = 85
 Pattern Strength = min(1.0, 85/100) = 0.85
-Base Score = 2.0
-Final Score = 2.0 × 0.85 = 1.7
+Base Score = 1.0 (از config)
+Final Score = 1.0 × 0.85 = 0.85
 ```
 
 ---
@@ -2339,7 +2341,7 @@ price_target = neckline_price - pattern_height  # برای bearish
 **امتیازدهی:**
 ```python
 # signal_generator.py:2029-2041
-pattern_quality = (1.0 - shoulder_diff) × time_gap_ratio × (1.0 - neckline_diff)
+pattern_quality = (1.0 - shoulder_diff_percent) × time_gap_ratio × (1.0 - neckline_diff_percent)
 score = 4.0 × pattern_quality
 ```
 
@@ -2388,22 +2390,27 @@ is_symmetric = upper_slope < -0.001 and lower_slope > 0.001
 
 **محاسبه نقطه همگرایی (Convergence Point):**
 ```python
-# signal_generator.py:2158-2160
-convergence_x = (lower_intercept - upper_intercept) / (upper_slope - lower_slope)
-convergence_y = upper_slope * convergence_x + upper_intercept
+# signal_generator.py:2158-2163
+if abs(upper_slope - lower_slope) > 1e-6:
+    convergence_x = (lower_intercept - upper_intercept) / (upper_slope - lower_slope)
+    convergence_y = upper_slope * convergence_x + upper_intercept
+else:
+    convergence_x = 0
+    convergence_y = 0
 ```
 
 **Pattern Quality:**
 ```python
 # signal_generator.py:2173-2175
-total_touches = len(peaks) + len(valleys)
-pattern_quality = min(1.0, total_touches / 6) × min(1.0, 1.0 - width / (upper * 0.2))
+total_touches = len(last_peaks) + len(last_valleys)
+pattern_quality = min(1.0, total_touches / 6) × min(1.0, 1.0 - pattern_width / (current_upper * 0.2))
 ```
 
 **Price Target:**
 ```python
-pattern_height = max(highs[peaks]) - min(lows[valleys])
-target = current_price ± pattern_height
+pattern_height = max(highs[last_peaks]) - min(lows[last_valleys])
+price_target = last_close + pattern_height  # برای bullish
+price_target = last_close - pattern_height  # برای bearish
 ```
 
 ---
@@ -2429,8 +2436,9 @@ target = current_price ± pattern_height
 
 1. **Pole (میله):** حرکت قوی قیمت
    ```python
-   # signal_generator.py:2243-2244
-   pole_price_change_pct = (closes[pole_end] - closes[pole_start]) / closes[pole_start]
+   # signal_generator.py:2243-2253
+   pole_price_change = closes[pole_end] - closes[pole_start]
+   pole_price_change_pct = pole_price_change / closes[pole_start] if closes[pole_start] > 0 else 0
 
    is_bullish_pole = pole_price_change_pct > 0.03  # 3% افزایش
    is_bearish_pole = pole_price_change_pct < -0.03  # 3% کاهش
@@ -2458,7 +2466,8 @@ elif is_bearish_pole:
 
 **Pattern Quality:**
 ```python
-flag_quality = (1.0 if strong_volume else 0.7) × (1.0 - slopes_diff / 0.001)
+# signal_generator.py:2286
+flag_quality = (1.0 if strong_volume else 0.7) × (1.0 - slopes_difference / 0.001)
 ```
 
 **Price Target:**
@@ -2476,7 +2485,7 @@ price_target = current_price - pole_height  # bear flag
 
 **محاسبه:**
 ```python
-upper, middle, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+upper, middle, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
 ```
 
 **الف) BB Position:**
@@ -2521,9 +2530,9 @@ elif current_close < current_lower:
 
 **محاسبه:**
 ```python
-avg_volume = mean(volume[-30:-1])
+avg_volume = np.mean(volume[-30:-1])
 current_volume = volume[-1]
-volume_ratio = current_volume / avg_volume
+volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
 ```
 
 **سیگنال‌های حجم:**
@@ -2616,12 +2625,14 @@ else:
 
 | دسته الگو | بازه امتیاز | مثال |
 |-----------|-------------|------|
-| الگوهای شمعی تک-کندلی | 1.5 - 3.0 | Hammer: 2.0, Morning Star: 3.0 |
+| الگوهای شمعی تک-کندلی | 0.25 - 1.5 | Hammer: 1.0, Morning Star: 1.5, Doji: 0.25 |
 | Head & Shoulders | 3.0 - 4.0 | با quality بالا: 4.0 |
 | Triangle Patterns | 2.5 - 3.5 | با quality بالا: 3.5 |
 | Flag Patterns | 2.0 - 3.0 | با volume قوی: 3.0 |
 | Bollinger Signals | 2.0 - 2.5 | Break: 2.5, Squeeze: 2.0 |
 | High Volume Signals | 2.8 | با کندل قوی |
+
+**⚠️ توجه:** امتیازات الگوهای شمعی در config واقعی پایین‌تر از انتظار هستند. بعد از ضرب در `pattern_strength`، امتیاز نهایی معمولاً بین 0.2 تا 1.3 است.
 
 ---
 
