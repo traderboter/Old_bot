@@ -4651,33 +4651,38 @@ is_breakout, breakout_direction = self._detect_breakout(df)
 **شرایط Breakout:**
 
 ```python
-# محاسبه بالاترین و پایین‌ترین قیمت در N کندل اخیر
-lookback = self.breakout_lookback  # 10 کندل
-recent_high = df['high'].iloc[-(lookback+1):-1].max()
-recent_low = df['low'].iloc[-(lookback+1):-1].max()
-
-current_close = df['close'].iloc[-1]
+# بررسی شکست بالا یا پایین باندهای بولینگر
+close_values = df['close'].iloc[-self.breakout_lookback:]
+upper_values = df['bb_upper'].iloc[-self.breakout_lookback:]
+lower_values = df['bb_lower'].iloc[-self.breakout_lookback:]
 
 # شرط Bullish Breakout
-if current_close > recent_high:
-    # بررسی حجم
-    volume_confirmation = current_volume > avg_volume * 1.5
+if close_values.iloc[-1] > upper_values.iloc[-1]:
+    # بررسی که کندل‌های قبلی زیر باند بالایی بوده‌اند
+    if all(close_values.iloc[-3:-1] <= upper_values.iloc[-3:-1]):
+        # محاسبه شدت شکست (بر حسب ATR)
+        breakout_strength = (close_values.iloc[-1] - upper_values.iloc[-1]) / df['atr'].iloc[-1]
 
-    # بررسی قدرت حرکت (تغییرات قیمت)
-    price_move_percent = (current_close - recent_high) / recent_high
-    strong_move = price_move_percent > (self.breakout_threshold / 100)  # 2%
+        if breakout_strength > self.breakout_threshold:
+            is_breakout = True
+            breakout_direction = "bullish"
 
-    if volume_confirmation and strong_move:
-        is_breakout = True
-        breakout_direction = "bullish"
+# شرط Bearish Breakout
+if close_values.iloc[-1] < lower_values.iloc[-1]:
+    # بررسی که کندل‌های قبلی بالای باند پایینی بوده‌اند
+    if all(close_values.iloc[-3:-1] >= lower_values.iloc[-3:-1]):
+        # محاسبه شدت شکست (بر حسب ATR)
+        breakout_strength = (lower_values.iloc[-1] - close_values.iloc[-1]) / df['atr'].iloc[-1]
 
-# مشابه برای Bearish Breakout
+        if breakout_strength > self.breakout_threshold:
+            is_breakout = True
+            breakout_direction = "bearish"
 ```
 
 **شرایط کامل Breakout:**
-1. **شکست قیمتی:** قیمت از highest/lowest اخیر عبور کند
-2. **تأیید حجم:** حجم معامله > 1.5 × میانگین حجم
-3. **قدرت حرکت:** حرکت قیمت > 2% (قابل تنظیم)
+1. **شکست از Bollinger Bands:** قیمت از باند بالایی/پایینی عبور کند
+2. **تأیید روند:** 3 کندل قبلی داخل باند بوده باشند (یعنی شکست تازه اتفاق افتاده)
+3. **قدرت شکست:** فاصله از باند > `breakout_threshold` (بر حسب ATR)
 
 ---
 
