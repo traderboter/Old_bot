@@ -313,7 +313,7 @@ async def analyze_symbol(self, symbol: str, timeframes_data: Dict[str, Optional[
 
 #### مرحله 1: تشخیص روند (Trend Detection)
 
-**محل در کد:** `signal_generator.py:1719-1850`
+**محل در کد:** `signal_generator.py:1719-1837`
 
 ```python
 analysis_data['trend'] = self.detect_trend(df)
