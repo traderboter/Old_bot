@@ -1272,28 +1272,122 @@ bullish_score = 2.2 + 2.3 + 2.5 + 2.1 = 9.1
 
 ##### 2.5 نحوه استفاده در امتیازدهی نهایی
 
-**Momentum به عنوان یک component در امتیاز کلی:**
+**محل در کد:** `signal_generator.py:4911-4921` و `signal_generator.py:5246-5253`
+
+Momentum در **دو مرحله** استفاده می‌شود:
+
+---
+
+**مرحله 1: انتخاب Base Signal (خط 4911-4921)**
+
+برای هر تایم‌فریم، سیستم تصمیم می‌گیرد که **Price Action** یا **Momentum** پایه سیگنال باشد:
 
 ```python
-# در مراحل بعد، momentum signals به structure_score اضافه می‌شوند
-for signal in momentum_signals:
-    if signal['type'] in signal_direction:  # اگر با جهت سیگنال همراستا باشد
-        structure_score += signal['score']
-    else:  # اگر مخالف باشد
-        structure_score -= signal['score'] * 0.5  # جریمه کمتر
+# signal_generator.py:4911-4921
+mom_res = result.get('momentum', {})
+pa_res = result.get('price_action', {})
+
+# محاسبه امتیاز خالص (bullish - bearish) برای هر کدام
+pa_score = pa_res.get('bullish_score', 0) - pa_res.get('bearish_score', 0)
+mom_score = mom_res.get('bullish_score', 0) - mom_res.get('bearish_score', 0)
+
+# انتخاب قوی‌تر:
+if abs(pa_score) >= abs(mom_score):
+    # Price Action قوی‌تر است
+    base_signal_score = pa_score
+    base_direction = 'bullish' if pa_score > 0 else 'bearish'
+elif abs(mom_score) > 0:
+    # Momentum قوی‌تر است
+    base_signal_score = mom_score
+    base_direction = 'bullish' if mom_score > 0 else 'bearish'
 ```
+
+**نکته:** اگر Price Action و Momentum هر دو قوی باشند، **Price Action** اولویت دارد.
+
+---
+
+**مرحله 2: محاسبه Multi-Timeframe Score (خط 5246-5253)**
+
+در این مرحله، momentum به امتیاز کلی اضافه می‌شود:
+
+```python
+# signal_generator.py:5246-5253
+# 1. دریافت داده‌های momentum
+mom_data = result.get('momentum', {})
+momentum_directions[tf] = mom_data.get('direction', 'neutral')
+momentum_strength = mom_data.get('momentum_strength', 1.0)  # پیش‌فرض: 1.0
+
+# 2. اضافه کردن امتیازات صعودی/نزولی
+bullish_score += mom_data.get('bullish_score', 0) * tf_weight * momentum_strength
+bearish_score += mom_data.get('bearish_score', 0) * tf_weight * momentum_strength
+
+# 3. اضافه کردن momentum signals به لیست کل signals
+mom_signals = [
+    {**s,
+     'timeframe': tf,
+     'score': s.get('score', 0) * tf_weight * momentum_strength
+    }
+    for s in mom_data.get('signals', [])
+]
+all_signals.extend(mom_signals)
+```
+
+**فرمول نهایی امتیاز momentum:**
+```
+امتیاز هر signal = base_score × timeframe_weight × momentum_strength
+```
+
+**مثال محاسبه:**
+```python
+# فرض: تایم‌فریم 5m با وزن 0.15
+tf_weight = 0.15
+momentum_strength = 1.0  # پیش‌فرض
+
+# Signal: rsi_oversold_reversal با امتیاز 2.3
+signal_score = 2.3 × 0.15 × 1.0 = 0.345
+
+# این امتیاز به bullish_score اضافه می‌شود:
+bullish_score += 0.345
+```
+
+---
 
 **نقش Momentum در تصمیم‌گیری:**
 
-1. **تأیید کننده (Confirmation):**
-   - اگر Price Action سیگنال خرید می‌دهد + momentum هم bullish است → قوی‌تر ✅
+| سناریو | Price Action | Momentum | نتیجه |
+|--------|-------------|----------|-------|
+| **تأیید کامل** | Bullish (+8) | Bullish (+9) | قوی‌ترین ✅ (momentum base signal می‌شود) |
+| **تأیید متوسط** | Bullish (+10) | Bullish (+5) | خوب ✅ (price action base signal می‌شود) |
+| **تضاد** | Bullish (+8) | Bearish (-6) | ضعیف ⚠️ (price action base، اما نزولی‌ها هم جمع می‌شوند) |
+| **خنثی** | Bullish (+8) | Neutral (0) | متوسط (فقط price action) |
 
-2. **هشدار دهنده (Warning):**
-   - اگر Price Action سیگنال خرید می‌دهد + momentum bearish است → ضعیف‌تر ⚠️
+**توضیح تضاد:**
+- اگر Price Action صعودی (+8) و Momentum نزولی (-6) باشد:
+- Price Action به عنوان base signal انتخاب می‌شود (چون abs(8) > abs(-6))
+- اما در Multi-Timeframe Score، **هر دو** جمع می‌شوند:
+  - `bullish_score += 8 (از price action)`
+  - `bearish_score += 6 (از momentum)`
+  - نتیجه: تضعیف سیگنال نهایی
 
-3. **واگرایی = سیگنال قوی:**
-   - واگرایی نشان‌دهنده تغییر روند است
-   - امتیاز بالاتر (تا 3.5) نسبت به سایر momentum signals
+**⚠️ نکته مهم:** Momentum Signals به صورت **جداگانه** به امتیاز کلی اضافه می‌شوند، **نه** به عنوان جریمه/پاداش مستقیم.
+
+---
+
+**تأثیر Divergence:**
+
+واگرایی (Divergence) **قوی‌ترین** سیگنال momentum است:
+
+```python
+# امتیاز واگرایی:
+divergence_score = 3.5 × divergence_strength  # حداکثر 3.5
+
+# در مقایسه با سایر signals:
+rsi_oversold_reversal = 2.3      # ثابت
+macd_bullish_crossover = 2.2     # ثابت
+divergence = 2.1 تا 3.5          # متغیر بر اساس قدرت
+```
+
+واگرایی اغلب باعث می‌شود Momentum به عنوان **Base Signal** انتخاب شود.
 
 ---
 
