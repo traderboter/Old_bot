@@ -362,7 +362,7 @@ ema50_slope = ema50[last_valid_idx] - ema50[last_valid_idx - 5] if last_valid_id
 
 ##### 1.2 تعیین جهت و قدرت روند
 
-**جدول کامل Trend Detection (محل در کد: signal_generator.py:1784-1816):**
+**جدول کامل Trend Detection (محل در کد: signal_generator.py:1784-1815):**
 
 **⚠️ توجه:** شرایط به ترتیب با `if-elif` بررسی می‌شوند، یعنی اولین شرط که برقرار باشد اعمال می‌شود.
 
@@ -431,6 +431,7 @@ Trend به دو روش در امتیازدهی تأثیر می‌گذارد:
 if is_reversal:
     score.trend_alignment = max(0.5, 1.0 - (reversal_strength * 0.5))
 else:
+    score.timeframe_weight = 1.0 + (higher_tf_ratio * 0.5)
     score.trend_alignment = 1.0 + (primary_trend_strength * 0.2)
 ```
 
@@ -469,7 +470,7 @@ def _get_trend_phase_multiplier(phase: str) -> float:
 
 ##### 1.4 محاسبات واقعی در کد
 
-**⚠️ نکته مهم:** محاسبه `structure_score` شامل **چهار مرحله** است:
+**⚠️ نکته مهم:** محاسبه `structure_score` شامل **شش مرحله** است:
 
 ```python
 # محل در کد: signal_generator.py:4395-4429
@@ -484,13 +485,27 @@ if trends_aligned:
 else:
     structure_score -= 0.3  # contradict_penalty
 
-# مرحله 3: اعمال Multiplier متغیر
+# مرحله 3: اعمال Multiplier متغیر (بزرگترین تأثیر)
 if trends_aligned:
     structure_score *= (1 + 1.5 * (min_strength / 3))
 else:
     structure_score *= (1 - 1.5 * (min_strength / 3))
 
-# مرحله 4: محدودیت min/max
+# مرحله 4: تنظیم بر اساس momentum alignment
+if momentum_aligned:
+    structure_score *= 1.05  # +5%
+else:
+    structure_score *= 0.95  # -5%
+
+# مرحله 5: تنظیم بر اساس موقعیت قیمت نسبت به S/R
+if price_above_support and price_below_resistance:
+    structure_score *= 1.1  # +10%
+
+# مرحله 6: پاداش برای قرار گرفتن در زون S/R
+if at_support_zone or at_resistance_zone:
+    structure_score *= 1.2  # +20%
+
+# مرحله 7: محدودیت min/max
 structure_score = max(min(structure_score, 1.5), 0.5)  # محدود به [0.5, 1.5]
 ```
 
