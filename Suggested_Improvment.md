@@ -1682,15 +1682,67 @@ if current_ratio > self.volume_multiplier_threshold * 2.0:
 
 **راه حل پیشنهادی:**
 
+**نکته مهم:** این پیشنهاد نیاز به توابع کمکی و تغییر execution order دارد.
+
+**توابع کمکی مورد نیاز:**
+
 ```python
+# تابع کمکی 1: بررسی نزدیکی به سطح
+def _is_near_level(self, price: float, levels: List[float], threshold_pct: float = 0.02) -> bool:
+    """
+    بررسی نزدیکی قیمت به سطوح (S/R)
+
+    Args:
+        price: قیمت فعلی
+        levels: لیست سطوح (support یا resistance)
+        threshold_pct: درصد آستانه نزدیکی (پیش‌فرض 2%)
+
+    Returns:
+        True اگر قیمت نزدیک یکی از سطوح باشد
+    """
+    for level in levels:
+        if abs(price - level) / level <= threshold_pct:
+            return True
+    return False
+
+# تابع کمکی 2: بررسی قدرت momentum
+def _check_momentum_strength(self, momentum_data: Dict) -> bool:
+    """
+    بررسی قدرت momentum
+
+    Args:
+        momentum_data: نتایج از analyze_momentum_indicators
+
+    Returns:
+        True اگر momentum قوی باشد
+    """
+    if not momentum_data or momentum_data.get('status') != 'ok':
+        return False
+
+    bullish_score = momentum_data.get('bullish_score', 0)
+    bearish_score = momentum_data.get('bearish_score', 0)
+
+    # momentum قوی: اختلاف امتیازها بیشتر از 3
+    return abs(bullish_score - bearish_score) > 3.0
+
+# تابع اصلی: تشخیص pattern حجم بالا
 def classify_high_volume_pattern(self, df: pd.DataFrame, current_ratio: float,
-                                 trend_data: Dict, sr_levels: Dict) -> str:
+                                 trend_data: Dict, sr_levels: Dict,
+                                 momentum_data: Dict) -> str:
     """
     تشخیص نوع الگوی حجم بالا
+
+    Args:
+        df: DataFrame قیمت
+        current_ratio: نسبت حجم فعلی
+        trend_data: نتایج detect_trend
+        sr_levels: سطوح S/R از detect_support_resistance
+        momentum_data: نتایج analyze_momentum_indicators
 
     Returns:
         'breakout_volume': حجم شکست سطح - مثبت
         'climax_volume': حجم اوج - احتمال برگشت
+        'trending_volume': ادامه روند قوی
         'spike': افزایش معمولی حجم
     """
 
@@ -1704,7 +1756,7 @@ def classify_high_volume_pattern(self, df: pd.DataFrame, current_ratio: float,
 
         # بررسی momentum و روند
         is_trending = abs(trend_data.get('strength', 0)) >= 2
-        momentum_strong = self._check_momentum_strength(df)
+        momentum_strong = self._check_momentum_strength(momentum_data)
 
         # تشخیص الگو
         if (near_resistance or near_support) and is_trending and momentum_strong:
@@ -1722,6 +1774,79 @@ def classify_high_volume_pattern(self, df: pd.DataFrame, current_ratio: float,
 
     return 'normal'
 ```
+
+**نحوه استفاده - گزینه 1: تغییر analyze_volume_trend:**
+
+```python
+def analyze_volume_trend(self, df: pd.DataFrame, window: int = 20,
+                        trend_data: Optional[Dict] = None,
+                        sr_levels: Optional[Dict] = None,
+                        momentum_data: Optional[Dict] = None) -> Dict[str, Any]:
+    """Analyze volume trend with context awareness"""
+    results = {'status': 'ok', 'current_ratio': 1.0, 'trend': 'neutral', 'pattern': 'normal'}
+
+    # ... کد قبلی برای محاسبه current_ratio ...
+
+    # استفاده از classify_high_volume_pattern اگر context موجود باشد
+    if trend_data and sr_levels and momentum_data:
+        pattern = self.classify_high_volume_pattern(
+            df, current_ratio, trend_data, sr_levels, momentum_data
+        )
+        results['pattern'] = pattern
+    else:
+        # fallback به logic قدیمی
+        if current_ratio > self.volume_multiplier_threshold * 2.0:
+            results['pattern'] = 'climax_volume'
+        # ... بقیه شرایط ...
+
+    return results
+
+# فراخوانی در analyze_single_timeframe:
+# تغییر line 4697 از:
+# analysis_data['volume'] = self.analyze_volume_trend(df)
+# به:
+# analysis_data['volume'] = self.analyze_volume_trend(
+#     df,
+#     trend_data=analysis_data.get('trend'),
+#     sr_levels=analysis_data.get('support_resistance', {}).get('details'),
+#     momentum_data=analysis_data.get('momentum')
+# )
+```
+
+**نحوه استفاده - گزینه 2 (بهتر): Post-processing در analyze_single_timeframe:**
+
+```python
+async def analyze_single_timeframe(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    # ... کد قبلی تا line 4710 ...
+
+    # 6. Detect support/resistance
+    analysis_data['support_resistance'] = self.detect_support_resistance(df)
+
+    # ... بقیه analyses ...
+
+    # Post-processing: Refine volume pattern با استفاده از context
+    if (analysis_data.get('volume', {}).get('pattern') == 'climax_volume' and
+        analysis_data.get('trend') and
+        analysis_data.get('support_resistance') and
+        analysis_data.get('momentum')):
+
+        refined_pattern = self.classify_high_volume_pattern(
+            df,
+            analysis_data['volume']['current_ratio'],
+            analysis_data['trend'],
+            analysis_data['support_resistance'].get('details', {}),
+            analysis_data['momentum']
+        )
+        analysis_data['volume']['pattern'] = refined_pattern
+        analysis_data['volume']['refined'] = True
+
+    return analysis_data
+```
+
+**توصیه:** گزینه 2 بهتر است چون:
+- ✅ نیاز به تغییر signature تابع analyze_volume_trend ندارد
+- ✅ backward compatible است
+- ✅ فقط climax_volume را refine می‌کند
 
 **مزایا:**
 - تفکیک دقیق بین حجم مثبت (breakout) و منفی (climax)
@@ -1805,14 +1930,71 @@ else:
 
 **راه حل پیشنهادی:**
 
+**توابع کمکی مورد نیاز:**
+
 ```python
+# تابع کمکی 1: شمارش افزایش متوالی
+def _count_consecutive_increase(self, series: pd.Series, threshold: float = 0.0) -> int:
+    """
+    شمارش تعداد کندل‌های متوالی که مقدار در حال افزایش است
+
+    Args:
+        series: سری داده (مثلاً net_volume_cumsum)
+        threshold: حداقل تغییر برای در نظر گرفتن افزایش
+
+    Returns:
+        تعداد کندل‌های متوالی افزایشی از انتها
+    """
+    count = 0
+    for i in range(len(series) - 1, 0, -1):
+        if series.iloc[i] > series.iloc[i-1] + threshold:
+            count += 1
+        else:
+            break
+    return count
+
+# تابع کمکی 2: شمارش کاهش متوالی
+def _count_consecutive_decrease(self, series: pd.Series, threshold: float = 0.0) -> int:
+    """
+    شمارش تعداد کندل‌های متوالی که مقدار در حال کاهش است
+
+    Args:
+        series: سری داده (مثلاً net_volume_cumsum)
+        threshold: حداقل تغییر برای در نظر گرفتن کاهش
+
+    Returns:
+        تعداد کندل‌های متوالی کاهشی از انتها
+    """
+    count = 0
+    for i in range(len(series) - 1, 0, -1):
+        if series.iloc[i] < series.iloc[i-1] - threshold:
+            count += 1
+        else:
+            break
+    return count
+
+# تابع اصلی: تشخیص Accumulation/Distribution
 def detect_volume_accumulation_distribution(self, df: pd.DataFrame,
                                             window: int = 20) -> Dict[str, Any]:
     """
     تشخیص الگوهای Accumulation (تجمع) و Distribution (توزیع)
+
+    Args:
+        df: DataFrame قیمت با ستون‌های open, close, volume
+        window: تعداد کندل برای محاسبات (پیش‌فرض 20)
+
+    Returns:
+        {
+            'pattern': 'accumulation' | 'distribution' | 'surge' | 'neutral',
+            'strength': float (0-1),
+            'duration': int (تعداد کندل‌های متوالی)
+        }
     """
 
     results = {'pattern': 'neutral', 'strength': 0, 'duration': 0}
+
+    if len(df) < window + 1:
+        return results
 
     # محاسبه حجم نسبی در هر کندل
     vol_sma = df['volume'].rolling(window=window).mean()
@@ -1931,16 +2113,106 @@ def calculate_adaptive_volume_threshold(self, df: pd.DataFrame,
     return adaptive_threshold
 ```
 
-**استفاده:**
+**استفاده - گزینه 1: اضافه کردن پارامتر regime (توصیه می‌شود):**
 
 ```python
-# در تابع analyze_volume_trend
-market_regime = self.get_current_regime(df)
-adaptive_threshold = self.calculate_adaptive_volume_threshold(df, market_regime)
+def analyze_volume_trend(self, df: pd.DataFrame, window: int = 20,
+                        market_regime: Optional[str] = None) -> Dict[str, Any]:
+    """Analyze volume trend with adaptive threshold"""
+    results = {'status': 'ok', ...}
 
-# استفاده از آستانه انطباقی به جای ثابت
-is_confirmed_by_volume = current_ratio > adaptive_threshold
+    # ... محاسبات قبلی ...
+
+    # محاسبه آستانه انطباقی اگر regime موجود باشد
+    if market_regime:
+        adaptive_threshold = self.calculate_adaptive_volume_threshold(df, market_regime)
+    else:
+        adaptive_threshold = self.volume_multiplier_threshold  # fallback به ثابت
+
+    # استفاده از آستانه انطباقی
+    is_confirmed_by_volume = current_ratio > adaptive_threshold
+
+    return results
+
+# فراخوانی در analyze_single_timeframe:
+# ⚠️ مشکل: regime detection بعد از volume analysis اجرا می‌شود (line 4733)
+# راه حل: انتقال regime detection به قبل از volume یا استفاده از گزینه 2
 ```
+
+**استفاده - گزینه 2 (ساده‌تر): استفاده از trend strength به جای regime:**
+
+```python
+def calculate_adaptive_volume_threshold(self, df: pd.DataFrame,
+                                        trend_strength: Optional[int] = None,
+                                        window: int = 20) -> float:
+    """
+    محاسبه آستانه حجم انطباقی بر اساس trend strength و volume volatility
+
+    Args:
+        df: DataFrame قیمت
+        trend_strength: قدرت روند از detect_trend (-3 تا +3)
+        window: تعداد کندل برای محاسبات
+
+    Returns:
+        آستانه انطباقی (1.1 تا 2.0)
+    """
+
+    base_threshold = 1.3
+
+    # محاسبه نوسانات حجم
+    vol_std = df['volume'].rolling(window=window).std().iloc[-1]
+    vol_mean = df['volume'].rolling(window=window).mean().iloc[-1]
+    vol_cv = vol_std / vol_mean if vol_mean > 0 else 0  # Coefficient of Variation
+
+    # تطبیق با قدرت روند (اگر موجود باشد)
+    trend_adj = 0.0
+    if trend_strength is not None:
+        abs_strength = abs(trend_strength)
+        if abs_strength >= 3:
+            trend_adj = -0.15  # روند خیلی قوی - آستانه پایین‌تر
+        elif abs_strength >= 2:
+            trend_adj = -0.05  # روند قوی
+        elif abs_strength <= 1:
+            trend_adj = 0.2    # روند ضعیف/رنج - آستانه بالاتر
+
+    # تطبیق با نوسانات حجم
+    # اگر حجم خیلی متغیر است (CV بالا)، آستانه را بالا ببریم
+    volatility_adj = min(0.3, vol_cv * 0.5)
+
+    # محاسبه آستانه نهایی
+    adaptive_threshold = base_threshold + trend_adj + volatility_adj
+
+    # محدود کردن به بازه معقول
+    adaptive_threshold = max(1.1, min(2.0, adaptive_threshold))
+
+    return adaptive_threshold
+
+# استفاده در analyze_volume_trend:
+def analyze_volume_trend(self, df: pd.DataFrame, window: int = 20,
+                        trend_data: Optional[Dict] = None) -> Dict[str, Any]:
+    """Analyze volume trend with adaptive threshold"""
+    results = {'status': 'ok', ...}
+
+    # ... محاسبات قبلی ...
+
+    # محاسبه آستانه انطباقی
+    trend_strength = trend_data.get('strength', None) if trend_data else None
+    adaptive_threshold = self.calculate_adaptive_volume_threshold(df, trend_strength)
+
+    # استفاده از آستانه انطباقی
+    is_confirmed_by_volume = current_ratio > adaptive_threshold
+    results['adaptive_threshold'] = adaptive_threshold  # ذخیره برای debugging
+
+    return results
+
+# فراخوانی در analyze_single_timeframe (line 4697):
+# analysis_data['volume'] = self.analyze_volume_trend(df, trend_data=analysis_data.get('trend'))
+```
+
+**توصیه:** گزینه 2 بهتر است چون:
+- ✅ trend_data قبل از volume موجود است (line 4689)
+- ✅ ساده‌تر و کمتر وابسته به regime detection
+- ✅ backward compatible با fallback به threshold ثابت
 
 **مزایا:**
 - سازگاری با شرایط مختلف بازار
