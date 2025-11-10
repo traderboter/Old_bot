@@ -2380,13 +2380,16 @@ def calculate_adaptive_macd_parameters(self, df: pd.DataFrame,
         signal = int(signal * 1.2)
 
     # تطبیق با نوسانات
-    atr_percent = self.calculate_atr_percent(df)
-    if atr_percent > 5.0:  # نوسانات بالا
-        fast = int(fast * 1.15)
-        slow = int(slow * 1.15)
-    elif atr_percent < 1.5:  # نوسانات پایین
-        fast = int(fast * 0.85)
-        slow = int(slow * 0.85)
+    # محاسبه ATR درصدی
+    atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, timeperiod=14)
+    if len(atr) > 0 and not np.isnan(atr[-1]):
+        atr_percent = (atr[-1] / df['close'].iloc[-1]) * 100
+        if atr_percent > 5.0:  # نوسانات بالا
+            fast = int(fast * 1.15)
+            slow = int(slow * 1.15)
+        elif atr_percent < 1.5:  # نوسانات پایین
+            fast = int(fast * 0.85)
+            slow = int(slow * 0.85)
 
     return (fast, slow, signal)
 ```
@@ -2396,7 +2399,14 @@ def calculate_adaptive_macd_parameters(self, df: pd.DataFrame,
 ```python
 # در تابع _analyze_macd
 timeframe = df.attrs.get('timeframe', '15m')
-market_regime = self.get_current_regime(df)
+
+# دریافت رژیم بازار
+if self.regime_detector and self.regime_detector.enabled:
+    regime_result = self.regime_detector.detect_regime(df)
+    market_regime = regime_result.get('regime', 'unknown')
+else:
+    market_regime = 'unknown'
+
 fast, slow, signal = self.calculate_adaptive_macd_parameters(df, timeframe, market_regime)
 
 # استفاده از پارامترهای انطباقی
@@ -2555,7 +2565,11 @@ def _calculate_divergence_strength(self, df: pd.DataFrame, indicator: pd.Series)
     محاسبه قدرت واگرایی
     """
     # پیدا کردن دو قله/دره اخیر
-    peaks, valleys = self.find_peaks_and_valleys(indicator.values, ...)
+    peaks, valleys = self.find_peaks_and_valleys(
+        indicator.values,
+        distance=self.macd_peak_detection_settings['distance'],
+        prominence_factor=self.macd_peak_detection_settings['prominence_factor']
+    )
 
     if len(peaks) >= 2:
         # فاصله قیمتی بین قله‌ها
@@ -2616,7 +2630,11 @@ def detect_macd_bins(self, hist: pd.Series, dates_index: pd.Index) -> List[Dict[
     """
     signals = []
 
-    peaks_iloc, valleys_iloc = self.find_peaks_and_valleys(hist.values, ...)
+    peaks_iloc, valleys_iloc = self.find_peaks_and_valleys(
+        hist.values,
+        distance=self.macd_peak_detection_settings['distance'],
+        prominence_factor=self.macd_peak_detection_settings['prominence_factor']
+    )
 
     # Kill Long Bin: بین دو دره همیشه منفی (فشار فروش مداوم)
     if len(valleys_iloc) >= 2:
@@ -2828,6 +2846,30 @@ def _analyze_macd_advanced(self, df: pd.DataFrame) -> Dict[str, Any]:
 **راه حل پیشنهادی:**
 
 ```python
+def _is_near_support(self, price: float, sr_levels: Dict, threshold_pct: float = 0.02) -> bool:
+    """بررسی نزدیکی قیمت به سطوح support"""
+    supports = sr_levels.get('support', [])
+    for support in supports:
+        if abs(price - support) / support <= threshold_pct:
+            return True
+    return False
+
+def _is_near_resistance(self, price: float, sr_levels: Dict, threshold_pct: float = 0.02) -> bool:
+    """بررسی نزدیکی قیمت به سطوح resistance"""
+    resistances = sr_levels.get('resistance', [])
+    for resistance in resistances:
+        if abs(price - resistance) / resistance <= threshold_pct:
+            return True
+    return False
+
+def is_volume_confirmed(self, df: pd.DataFrame, threshold: float = 1.2) -> bool:
+    """بررسی تأیید حجم برای حرکت فعلی"""
+    if len(df) < 20:
+        return False
+    current_volume = df['volume'].iloc[-1]
+    avg_volume = df['volume'].iloc[-20:].mean()
+    return current_volume > avg_volume * threshold
+
 def validate_macd_with_price_action(self, macd_signals: List[Dict],
                                      df: pd.DataFrame,
                                      sr_levels: Dict) -> List[Dict]:
