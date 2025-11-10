@@ -6239,30 +6239,107 @@ if score_result.get('volatility_rejection', False):  # True!
 
 ### 6.4 تولید سیگنال نهایی
 
-**محل:** `signal_generator.py:5125-5195`
+**محل:** `signal_generator.py:5147-5195`
 
-پس از عبور از تمام فیلترها، سیگنال نهایی تولید می‌شود:
+پس از عبور از **همه فیلترها** و محاسبه **تمام ضرایب**، سیگنال نهایی تولید می‌شود.
+
+#### مرحله 1: ساخت SignalInfo Object
+
+**محل:** `signal_generator.py:5147-5172`
 
 ```python
-# signal_generator.py:5125-5195
-signal = SignalInfo(
+# signal_generator.py:5147-5172
+signal_info = SignalInfo(
+    # اطلاعات اصلی
     symbol=symbol,
-    direction=direction,
-    signal_type='LONG' if direction == 'bullish' else 'SHORT',
-    score=score,  # شامل final_score و تمام ضرایب
-    
+    timeframe=primary_tf,                    # کوچک‌ترین timeframe موفق
+    signal_type="reversal" if is_reversal else "multi_timeframe",
+    direction=direction,                     # 'long' یا 'short'
+
+    # قیمت‌ها
     entry_price=current_price,
-    stop_loss=stop_loss,
-    take_profit=take_profit,
+    stop_loss=final_sl,
+    take_profit=final_tp,
     risk_reward_ratio=final_rr,
-    
-    regime=regime_info.get('regime'),
-    timeframe_scores=timeframe_scores,
+
+    # زمان
+    timestamp=signal_timestamp,              # از primary_df گرفته شده
+
+    # امتیاز و الگوها
+    score=score,                             # شامل final_score و همه ضرایب
     pattern_names=pattern_names,
-    
-    timestamp=datetime.now(),
-    # ... و بقیه اطلاعات
+
+    # اطلاعات تأییدی
+    confirmation_timeframes=list(successful_analysis_results.keys()),
+    regime=regime_info.get('regime'),
+    is_reversal=is_reversal,
+
+    # تنظیمات و context
+    adapted_config=adapted_config,
+    correlated_symbols=correlated_symbols,
+    market_context=market_context,           # از بخش 6.10
+
+    # جزئیات تحلیل‌ها (از primary timeframe)
+    macd_details=successful_analysis_results.get(primary_tf, {}).get('macd', {}).get('details'),
+    volatility_details=successful_analysis_results.get(primary_tf, {}).get('volatility', {}).get('details'),
+    harmonic_details=successful_analysis_results.get(primary_tf, {}).get('harmonic_patterns'),
+    channel_details=successful_analysis_results.get(primary_tf, {}).get('price_channels'),
+    cyclical_details=successful_analysis_results.get(primary_tf, {}).get('cyclical_patterns')
 )
+```
+
+#### مرحله 2: تولید Signal ID و تنظیم Timestamp
+
+**محل:** `signal_generator.py:5174-5175`
+
+```python
+# signal_generator.py:5174-5175
+# تولید یک ID یکتا برای tracking این سیگنال
+signal_info.generate_signal_id()
+
+# اطمینان از timezone-aware بودن timestamp
+signal_info.ensure_aware_timestamp()
+```
+
+**فرمت Signal ID:**
+```python
+# SignalInfo.generate_signal_id() - خط 159-166
+signal_id = f"{symbol}_{direction}_{timestamp}_{random}"
+
+# مثال:
+# "BTCUSDT_LONG_20251110143052_a3f9"
+```
+
+**چرا Signal ID مهم است؟**
+- ✅ **Tracking** - پیگیری سیگنال در سیستم
+- ✅ **Logging** - ثبت در لاگ‌ها
+- ✅ **Trade Results** - ارتباط با نتایج معاملات
+- ✅ **Debugging** - شناسایی سیگنال‌های مشکل‌دار
+
+#### مرحله 3: لاگ کردن سیگنال (اختیاری)
+
+**محل:** `signal_generator.py:5177-5193` (کامنت شده)
+
+```python
+# اطلاعات برای لاگ جمع‌آوری می‌شود اما logger.info کامنت است
+btc_info = ""
+if btc_compatibility:
+    btc_corr = btc_compatibility.get('correlation_with_btc', 0)
+    btc_info = f", BTC Trend: {btc_trend}, BTC Corr: {btc_corr:.2f}"
+
+# logger.info(
+#     f"Generated {direction.upper()} signal for {symbol} "
+#     f"[Score: {score.final_score:.2f}, RR: {final_rr:.2f}{btc_info}]"
+# )
+```
+
+#### مرحله 4: برگشت SignalInfo
+
+**محل:** `signal_generator.py:5195`
+
+```python
+# signal_generator.py:5195
+return signal_info  # ✅ سیگنال کامل با تمام اطلاعات
 ```
 
 ---
@@ -6461,26 +6538,109 @@ COMPATIBILITY_THRESHOLD = -30  # اگر correlation_score < -30 باشد → ر�
 این بخش **شرایط برگشت روند** را تشخیص می‌دهد و بر **ضرایب امتیاز** تأثیر می‌گذارد.
 
 **محل:**
-- `signal_generator.py:5052` - فراخوانی
-- `signal_generator.py:3693-3777` - منطق تشخیص
+- `signal_generator.py:5052` - فراخوانی detect_reversal_conditions
+- `signal_generator.py:5055-5077` - محاسبه higher_tf_ratio و تأثیر بر ضرایب
+- `signal_generator.py:3693-3777` - منطق تشخیص 6 روش
 
-#### نحوه کار:
+#### مرحله 1: محاسبه Higher Timeframe Ratio
+
+⚠️ **این مرحله همیشه** (چه reversal باشد چه نباشد) اجرا می‌شود:
+
+**محل:** `signal_generator.py:5055-5066`
+
+```python
+# signal_generator.py:5055-5066
+# 1. انتخاب primary timeframe (کوچک‌ترین timeframe موفق)
+primary_tf = valid_tfs_sorted[0]  # مثلاً '5m'
+primary_tf_weight = self.timeframe_weights.get(primary_tf, 1.0)  # 0.7
+
+# 2. شمارش timeframeهای بالاتر
+higher_tf_confirmations = 0  # چند تا با جهت نهایی موافق‌اند
+total_higher_tfs = 0          # مجموع timeframeهای بالاتر
+
+for tf, res in successful_analysis_results.items():
+    tf_w = self.timeframe_weights.get(tf, 1.0)
+
+    # آیا این timeframe وزن بالاتری از primary دارد؟
+    if tf_w > primary_tf_weight:
+        total_higher_tfs += 1
+
+        # آیا با جهت نهایی موافق است؟
+        trend_dir = res.get('trend', {}).get('trend', 'neutral')
+        if (final_direction == 'bullish' and 'bullish' in trend_dir) or \
+           (final_direction == 'bearish' and 'bearish' in trend_dir):
+            higher_tf_confirmations += 1
+
+# 3. محاسبه نسبت
+higher_tf_ratio = higher_tf_confirmations / total_higher_tfs if total_higher_tfs > 0 else 0
+```
+
+**مثال:**
+```python
+# فرض کنید:
+final_direction = 'bullish'
+primary_tf = '5m' (وزن = 0.7)
+
+successful_analysis_results = {
+    '5m': {'trend': {'trend': 'bullish'}},    # primary
+    '15m': {'trend': {'trend': 'bullish'}},   # ✅ بالاتر + موافق
+    '1h': {'trend': {'trend': 'bullish'}},    # ✅ بالاتر + موافق
+    '4h': {'trend': {'trend': 'neutral'}}     # ❌ بالاتر اما neutral
+}
+
+# محاسبه:
+# '15m' → وزن 0.85 > 0.7 ✓ بالاتر است، bullish ✓ موافق
+# '1h' → وزن 1.0 > 0.7 ✓ بالاتر است، bullish ✓ موافق
+# '4h' → وزن 1.2 > 0.7 ✓ بالاتر است، neutral ✗ موافق نیست
+
+total_higher_tfs = 3
+higher_tf_confirmations = 2
+higher_tf_ratio = 2/3 = 0.67
+```
+
+#### مرحله 2: تشخیص Reversal
+
+**محل:** `signal_generator.py:5052`
 
 ```python
 # signal_generator.py:5052
 is_reversal, reversal_strength = self.detect_reversal_conditions(
-    successful_analysis_results, best_timeframe
+    successful_analysis_results, primary_tf
 )
+```
 
+#### مرحله 3: اعمال تأثیر بر ضرایب
+
+**محل:** `signal_generator.py:5071-5077`
+
+**حالت 1: Reversal تشخیص داده شد** (is_reversal = True)
+
+```python
 if is_reversal:
-    # کاهش وزن timeframe
+    # کاهش وزن با توجه به قدرت reversal
     reversal_modifier = max(0.3, 1.0 - (reversal_strength * 0.7))
 
-    # higher_tf_ratio: نسبت timeframeهای بالاتر که موافق هستند
+    # timeframe_weight: کاهش تأثیر higher timeframes
     score.timeframe_weight = 1.0 + (higher_tf_ratio * 0.3 * reversal_modifier)
 
-    # کاهش alignment
-    score.trend_alignment = min(1.0, score.trend_alignment * (0.7 + reversal_modifier * 0.3))
+    # trend_alignment: کاهش مستقیم
+    score.trend_alignment = max(0.5, 1.0 - (reversal_strength * 0.5))
+```
+
+**حالت 2: Reversal تشخیص داده نشد** (is_reversal = False)
+
+```python
+else:
+    # سیگنال با روند همراستا است
+    # timeframe_weight: تأثیر کامل higher timeframes
+    score.timeframe_weight = 1.0 + (higher_tf_ratio * 0.5)
+
+    # trend_alignment: بر اساس قدرت روند primary
+    primary_trend_strength = abs(successful_analysis_results
+                                  .get(primary_tf, {})
+                                  .get('trend', {})
+                                  .get('strength', 0))
+    score.trend_alignment = 1.0 + (primary_trend_strength * 0.2)
 ```
 
 #### 6 روش تشخیص برگشت:
