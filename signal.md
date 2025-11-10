@@ -1549,12 +1549,13 @@ analysis_data['volume'] = self.analyze_volume_trend(df, window=20)
 ```python
 # signal_generator.py:1667-1670
 if use_bottleneck:
-    vol_sma = bn.move_mean(vol_series.values, window=20, min_count=20)
+    vol_sma = bn.move_mean(vol_series.values, window=window, min_count=window)
 else:
-    vol_sma = vol_series.rolling(window=20, min_periods=20).mean().values
+    vol_sma = vol_series.rolling(window=window, min_periods=window).mean().values
 ```
 
-- از میانگین متحرک ساده 20 دوره‌ای استفاده می‌شود
+- از میانگین متحرک ساده (پیش‌فرض 20 دوره‌ای) استفاده می‌شود
+- پارامتر `window` قابل تنظیم است (پیش‌فرض = 20)
 - **Optimization:** اگر کتابخانه `bottleneck` نصب باشد، از `bn.move_mean()` استفاده می‌کند (سریع‌تر)
 - در غیر این صورت از `pandas.rolling().mean()` استفاده می‌شود
 - این میانگین به عنوان مبنای مقایسه برای حجم فعلی عمل می‌کند
@@ -1623,7 +1624,8 @@ is_confirmed_by_volume = current_ratio > volume_multiplier_threshold
 اگر حداقل 10 کندل موجود باشد:
 
 ```python
-vol_sma_slope = (vol_sma[-1] - vol_sma[-10]) / vol_sma[-10]
+# signal_generator.py:1706-1710
+vol_sma_slope = (vol_sma[-1] - vol_sma[-10]) / vol_sma[-10] if vol_sma[-10] > 0 else 0
 
 if vol_sma_slope > 0.05:    # افزایش 5%
     volume_ma_trend = 'increasing'
@@ -1678,15 +1680,15 @@ Volume Confirmation Factor = 1.0 + (عامل تأیید حجمی × 0.4)
 ```python
 # signal_generator.py:5360-5367
 weighted_volume_factor = 0.0
-total_weight = 0.0
+total_weight_vol = 0.0
 
 for timeframe, is_confirmed in volume_confirmations.items():
     tf_weight = timeframe_weights.get(timeframe, 1.0)
     weighted_volume_factor += (1 if is_confirmed else 0) * tf_weight
-    total_weight += tf_weight
+    total_weight_vol += tf_weight
 
 # Safety check برای division by zero
-volume_confirmation_factor = weighted_volume_factor / total_weight if total_weight > 0 else 0.0
+volume_confirmation_factor = weighted_volume_factor / total_weight_vol if total_weight_vol > 0 else 0.0
 ```
 
 **مثال محاسبه چندتایم‌فریمی:**
