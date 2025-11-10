@@ -4120,15 +4120,15 @@ ATR% = (1,500 / 50,000) × 100 = 3.0%
 ```python
 # کد: signal_generator.py:4484-4491
 if use_bottleneck:
-    atr_pct_ma = bn.move_mean(atr_pct, window=20, min_count=1)
+    atr_pct_ma = bn.move_mean(atr_pct, window=self.vol_atr_ma_period, min_count=1)
 else:
     for i in range(len(atr_pct)):
-        start_idx = max(0, i - 20 + 1)
+        start_idx = max(0, i - self.vol_atr_ma_period + 1)
         atr_pct_ma[i] = np.mean(atr_pct[start_idx:i + 1])
 ```
 
 **پارامترها:**
-- **window = 20:** میانگین 20 دوره اخیر (پیش‌فرض: `vol_atr_ma_period`)
+- **window = 30:** میانگین 30 دوره اخیر (پیش‌فرض: `vol_atr_ma_period`)
 
 **مثال:**
 ```
@@ -4402,7 +4402,7 @@ if not self.vol_enabled or df is None or len(df) < max(self.vol_atr_period, self
 **شرایط:**
 1. `vol_enabled = False` → نوسان در کانفیگ غیرفعال شده
 2. `df is None` → داده موجود نیست
-3. `len(df) < max(14, 20) + 10 = 30` → حداقل 30 کندل لازم است
+3. `len(df) < max(14, 30) + 10 = 40` → حداقل 40 کندل لازم است
 
 **در این صورت:**
 ```python
