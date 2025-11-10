@@ -795,7 +795,7 @@ trend_alignment = max(0.5, 1.0 - (0.7 * 0.5))
 
 #### مرحله 2: تحلیل اندیکاتورهای مومنتوم (RSI, Stochastic, MACD, MFI)
 
-**محل در کد:** `signal_generator.py:3511-3700`
+**محل در کد:** `signal_generator.py:3511-3691`
 
 ```python
 analysis_data['momentum'] = self.analyze_momentum_indicators(df)
