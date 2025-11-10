@@ -4482,18 +4482,25 @@ if not self.vol_enabled or df is None or len(df) < max(self.vol_atr_period, self
 
 | تحلیل | شرایط بهینه | امتیاز/ضریب | اهمیت |
 |-------|-------------|-------------|-------|
-| **Harmonic Pattern** | الگوی کامل با کیفیت بالا | +30 تا +50 | ⭐⭐⭐⭐⭐ |
-| **Price Channel** | قیمت در کف کانال صعودی | +20 تا +30 | ⭐⭐⭐⭐ |
-| **Channel Breakout** | شکست کانال با حجم | +35 تا +50 | ⭐⭐⭐⭐⭐ |
-| **Cyclical Pattern** | چرخه در نزدیکی کف | +15 تا +25 | ⭐⭐⭐ |
+| **Harmonic Pattern** | الگوی کامل با کیفیت بالا | +2 تا +5 | ⭐⭐⭐⭐⭐ |
+| **Price Channel (Bounce)** | قیمت در کف کانال صعودی | +2 تا +4 | ⭐⭐⭐⭐ |
+| **Channel Breakout** | شکست کانال با حجم | +3 تا +5 | ⭐⭐⭐⭐⭐ |
+| **Cyclical Pattern** | چرخه در نزدیکی کف | +1.5 تا +3 | ⭐⭐⭐ |
 | **Volatility Normal** | نوسان عادی | ×1.0 | ⭐⭐⭐ |
 | **Volatility High** | نوسان بالا | ×0.8 | ⭐⭐ |
-| **Volatility Extreme** | نوسان خطرناک | رد سیگنال ❌ | ⭐⭐⭐⭐⭐ |
+| **Volatility Extreme** | نوسان خطرناک | ×0.5 یا رد سیگنال ❌ | ⭐⭐⭐⭐⭐ |
 
 **نکته مهم:**
 - الگوهای هارمونیک و شکست کانال **بالاترین امتیاز** را دارند
-- نوسان بسیار بالا می‌تواند **کل سیگنال را رد** کند
+- نوسان بسیار بالا می‌تواند **کل سیگنال را رد** کند (بسته به تنظیم `reject_on_extreme_volatility`)
 - این تحلیل‌ها معمولاً در تایم‌فریم‌های بالاتر (1h, 4h) موثرترند
+
+**محاسبه امتیازات:**
+- **Harmonic Pattern**: `4.0 × confidence × tf_weight` (confidence: 0.7-1.0، tf_weight: 0.7-1.2)
+- **Channel Bounce**: `3.0 × quality × tf_weight` (quality: 0-1.0)
+- **Channel Breakout**: `4.0 × quality × tf_weight` (quality: 0-1.0)
+- **Cyclical Pattern**: `2.5 × clarity × strength × tf_weight` (clarity & strength: 0-1.0)
+- **Volatility**: ضریب نهایی که بر روی امتیاز کل سیگنال ضرب می‌شود
 
 ---
 
