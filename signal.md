@@ -307,7 +307,7 @@ async def analyze_symbol(self, symbol: str, timeframes_data: Dict[str, Optional[
 
 ### 2.1 ورودی به analyze_single_timeframe
 
-**محل:** `signal_generator.py:4647-4850`
+**محل:** `signal_generator.py:4647-4790`
 
 برای هر تایم‌فریم (مثلاً 5m) این تحلیل‌ها به ترتیب انجام می‌شوند:
 
@@ -348,7 +348,7 @@ ema50_slope = ema50[-1] - ema50[-6]
 | `bearish_aligned` | EMA20 < EMA50 < EMA100 | روند نزولی قوی ⬇️ |
 | `potential_bullish_reversal` | EMA20 > EMA50 < EMA100 | احتمال بازگشت صعودی 🔄 |
 | `potential_bearish_reversal` | EMA20 < EMA50 > EMA100 | احتمال بازگشت نزولی 🔄 |
-| `mixed` | غیر از موارد بالا | روند نامشخص ⚠️ |
+| `unknown` | غیر از موارد بالا | روند نامشخص ⚠️ |
 
 ---
 
@@ -454,35 +454,73 @@ def _get_trend_phase_multiplier(phase: str) -> float:
 
 ##### 1.4 محاسبات واقعی در کد
 
-**سناریو 1: روندها همراستا (trends_aligned = True)**
+**⚠️ نکته مهم:** محاسبه `structure_score` شامل **چهار مرحله** است:
 
 ```python
-# محل در کد: signal_generator.py:4402-4403
-structure_score *= (1 + 1.5 * (min_strength / 3))
+# محل در کد: signal_generator.py:4395-4429
+
+# مرحله 1: امتیاز پایه
+base_score = 1.0  # پیش‌فرض
+structure_score = base_score
+
+# مرحله 2: اضافه/کسر Bonus/Penalty ثابت
+if trends_aligned:
+    structure_score += 0.2  # confirm_bonus
+else:
+    structure_score -= 0.3  # contradict_penalty
+
+# مرحله 3: اعمال Multiplier متغیر
+if trends_aligned:
+    structure_score *= (1 + 1.5 * (min_strength / 3))
+else:
+    structure_score *= (1 - 1.5 * (min_strength / 3))
+
+# مرحله 4: محدودیت min/max
+structure_score = max(min(structure_score, 1.5), 0.5)  # محدود به [0.5, 1.5]
 ```
 
-مثال‌ها:
-- strength = 3: multiplier = 1 + 1.5 * (3/3) = **2.5** (افزایش 150%)
-- strength = 2: multiplier = 1 + 1.5 * (2/3) = **2.0** (افزایش 100%)
-- strength = 1: multiplier = 1 + 1.5 * (1/3) = **1.5** (افزایش 50%)
+---
+
+**سناریو 1: روندها همراستا (trends_aligned = True)**
+
+محاسبه کامل با strength = 3:
+```python
+structure_score = 1.0           # base
+structure_score += 0.2          # confirm_bonus → 1.2
+structure_score *= (1 + 1.5)    # multiplier → 1.2 * 2.5 = 3.0
+structure_score = min(3.0, 1.5) # محدودیت max → 1.5
+# نتیجه نهایی: 1.5
+```
+
+| Strength | قبل Multiplier | Multiplier | قبل محدودیت | نتیجه نهایی |
+|----------|---------------|-----------|-------------|-------------|
+| 3 | 1.2 | 2.5 | 3.0 | **1.5** (محدود شد) |
+| 2 | 1.2 | 2.0 | 2.4 | **1.5** (محدود شد) |
+| 1 | 1.2 | 1.5 | 1.8 | **1.5** (محدود شد) |
+
+---
 
 **سناریو 2: روندها مخالف (trends_aligned = False)**
 
+محاسبه کامل با strength = 3:
 ```python
-# محل در کد: signal_generator.py:4406-4407
-structure_score *= (1 - 1.5 * (min_strength / 3))
+structure_score = 1.0           # base
+structure_score -= 0.3          # contradict_penalty → 0.7
+structure_score *= (1 - 1.5)    # multiplier → 0.7 * (-0.5) = -0.35
+structure_score = max(-0.35, 0.5) # محدودیت min → 0.5
+# نتیجه نهایی: 0.5
 ```
 
-مثال‌ها:
-- strength = 3: multiplier = 1 - 1.5 * (3/3) = **-0.5** (کاهش 150% - مقدار منفی!)
-- strength = 2: multiplier = 1 - 1.5 * (2/3) = **0.0** (کاهش 100% - صفر می‌شود!)
-- strength = 1: multiplier = 1 - 1.5 * (1/3) = **0.5** (کاهش 50%)
+| Strength | قبل Multiplier | Multiplier | قبل محدودیت | نتیجه نهایی |
+|----------|---------------|-----------|-------------|-------------|
+| 3 | 0.7 | -0.5 | -0.35 | **0.5** (محدود شد) |
+| 2 | 0.7 | 0.0 | 0.0 | **0.5** (محدود شد) |
+| 1 | 0.7 | 0.5 | 0.35 | **0.5** (محدود شد - نزدیک بود!) |
 
-**⚠️ توجه:** کد فعلی محدودیت min/max دارد که از منفی شدن امتیاز جلوگیری می‌کند:
-```python
-# محل در کد: signal_generator.py:4428-4429
-structure_score = max(min(structure_score, max_score), min_score)
-```
+**نتیجه‌گیری:**
+- تمام حالات aligned به **1.5** ختم می‌شوند (حداکثر)
+- تمام حالات conflicting به **0.5** ختم می‌شوند (حداقل)
+- محدودیت min/max باعث می‌شود تفاوت واقعی فقط **3x** باشد (1.5 / 0.5)
 
 **سناریو 3: Trend Phase Multiplier**
 
@@ -653,6 +691,90 @@ if signal_direction != trend_direction:
 # در فرمول نهایی
 final_score = raw_score * trend_multiplier * regime_multiplier * volatility_factor
 ```
+
+---
+
+##### 1.7 تشخیص Reversal و تأثیر آن
+
+**محل در کد:** `signal_generator.py:3706-3730` و `signal_generator.py:5071-5077`
+
+کد فعلی قابلیت تشخیص سیگنال‌های **Reversal** (بازگشت روند) را دارد، اما به صورت محدود.
+
+**چه موقع سیگنال Reversal شناسایی می‌شود؟**
+
+```python
+# محل: signal_generator.py:3714-3719
+is_reversal = False
+
+# شرط 1: RSI Divergence (واگرایی)
+if any('rsi_bullish_divergence' == s.get('type') for s in momentum_signals):
+    is_reversal = True
+    reversal_strength += 0.7
+
+if any('rsi_bearish_divergence' == s.get('type') for s in momentum_signals):
+    is_reversal = True
+    reversal_strength += 0.7
+
+# شرط 2: Oversold/Overbought در خلاف روند
+# اگر RSI oversold در روند نزولی → احتمال بازگشت صعودی
+# اگر RSI overbought در روند صعودی → احتمال بازگشت نزولی
+```
+
+**تأثیر Reversal بر امتیازدهی:**
+
+```python
+# محل: signal_generator.py:5071-5077
+if is_reversal:
+    # سیگنال در خلاف روند است اما دلیل reversal دارد
+    reversal_modifier = max(0.3, 1.0 - (reversal_strength * 0.7))
+    score.timeframe_weight = 1.0 + (higher_tf_ratio * 0.3 * reversal_modifier)
+    score.trend_alignment = max(0.5, 1.0 - (reversal_strength * 0.5))
+else:
+    # سیگنال با روند همراستا است
+    score.timeframe_weight = 1.0 + (higher_tf_ratio * 0.5)
+    score.trend_alignment = 1.0 + (primary_trend_strength * 0.2)
+```
+
+**محاسبه Trend Alignment:**
+
+| Scenario | Reversal Strength | trend_alignment | تفسیر |
+|----------|------------------|-----------------|-------|
+| **Reversal قوی** | 1.0 | max(0.5, 0.5) = **0.5** | کاهش 50% |
+| **Reversal متوسط** | 0.7 | max(0.5, 0.65) = **0.65** | کاهش 35% |
+| **Reversal ضعیف** | 0.3 | max(0.5, 0.85) = **0.85** | کاهش 15% |
+| **With Trend** | - | 1.0 + (3 * 0.2) = **1.6** | افزایش 60% |
+
+**⚠️ محدودیت‌های کد فعلی:**
+
+1. **فقط RSI Divergence:**
+   - الگوهای کلاسیک reversal (Head & Shoulders، Double Top/Bottom) در نظر گرفته نمی‌شوند
+
+2. **عدم بررسی Support/Resistance:**
+   - Reversal در سطوح قوی S/R معتبرتر است
+   - کد فعلی این را چک نمی‌کند
+
+3. **یکسان‌سازی Counter-Trend:**
+   - هر سیگنال خلاف روند (بدون دلیل reversal) جریمه سنگین می‌شود
+   - ممکن است فرصت‌های reversal معتبر را از دست بدهیم
+
+**مثال عملی:**
+
+```python
+# سناریو: سیگنال Long در روند Bearish با RSI Bullish Divergence
+trend = 'bearish'
+strength = -3
+is_reversal = True
+reversal_strength = 0.7
+
+# محاسبه:
+trend_alignment = max(0.5, 1.0 - (0.7 * 0.5))
+               = max(0.5, 0.65)
+               = 0.65
+
+# نتیجه: سیگنال 35% کاهش می‌یابد (به جای 50% در صورت نبود divergence)
+```
+
+**نکته:** این بخش در Suggested_Improvment.md دارای پیشنهادات بهبود است.
 
 ---
 
