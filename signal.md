@@ -5258,665 +5258,410 @@ else:
 
 ### 5.2 وزن‌دهی به تایم‌فریم‌ها
 
-**محل:** `signal_generator.py:5003-5042`
+**محل:** `signal_generator.py:1458-1460`
 
-هر تایم‌فریم یک **وزن (Weight)** دارد که اهمیت آن را مشخص می‌کند:
+هر تایم‌فریم یک **ضریب (Weight Multiplier)** دارد که بر امتیازات آن تایم‌فریم **ضرب** می‌شود:
 
 ```python
-TIMEFRAME_WEIGHTS = {
-    '5m': 0.15,   # 15% - فقط برای تایمینگ دقیق
-    '15m': 0.20,  # 20% - روند کوتاه‌مدت
-    '1h': 0.30,   # 30% - روند میان‌مدت (مهم!)
-    '4h': 0.35    # 35% - روند اصلی (بسیار مهم!)
+# signal_generator.py:1458-1460
+self.timeframe_weights = {
+    '5m': 0.7,    # ضریب 0.7 - اهمیت کمتر
+    '15m': 0.85,  # ضریب 0.85
+    '1h': 1.0,    # ضریب 1.0 - پایه
+    '4h': 1.2     # ضریب 1.2 - اهمیت بیشتر
 }
 ```
 
-**چرا این وزن‌ها؟**
+**توضیح:**
+این وزن‌ها **ضریب** هستند نه درصد! امتیاز هر تایم‌فریم در این ضریب ضرب می‌شود.
 
-1. **تایم‌فریم‌های بالاتر معتبرتر هستند:**
-   - نویز کمتر
-   - روندهای قوی‌تر
+**چرا این ضرایب؟**
+
+1. **تایم‌فریم‌های بالاتر امتیاز بیشتری می‌گیرند:**
+   - 4h: امتیاز × 1.2 = +20% بیشتر
+   - 1h: امتیاز × 1.0 = پایه
+   - 15m: امتیاز × 0.85 = -15% کمتر
+   - 5m: امتیاز × 0.7 = -30% کمتر
+
+2. **نویز کمتر در تایم‌فریم‌های بالاتر:**
    - سیگنال‌های پایدارتر
+   - روندهای قوی‌تر
+   - تصمیم‌گیری مهم‌تر
 
-2. **تایم‌فریم پایین برای Timing:**
-   - نقطه ورود دقیق
-   - جزئیات کوتاه‌مدت
-   - ولی نباید تصمیم اصلی را بگیرد
+**مثال محاسبه:**
+```python
+# اگر همه تایم‌فریم‌ها امتیاز 50 داشته باشند:
+5m:  50 × 0.7  = 35
+15m: 50 × 0.85 = 42.5
+1h:  50 × 1.0  = 50
+4h:  50 × 1.2  = 60
+# امتیاز 4h بیشترین تأثیر را دارد!
+```
 
-**مثال:**
-```
-اگر 4h و 1h هر دو نزولی هستند → وزن = 65%
-حتی اگر 5m و 15m صعودی باشند → وزن = 35%
-نتیجه: سیگنال خرید رد می‌شود! ❌
-```
+**نکته مهم:**
+وزن‌ها در **محاسبه امتیاز وزن‌دار** استفاده می‌شوند، اما در **محاسبه alignment** استفاده نمی‌شوند!
 
 ---
 
-### 5.3 محاسبه Alignment Score (امتیاز همراستایی)
+### 5.3 محاسبه Alignment Factor (ضریب همراستایی)
 
-**محل:** `signal_generator.py:5044-5120`
+**محل:** `signal_generator.py:4808-4856`
 
-یکی از مهم‌ترین مفاهیم: **همراستایی (Alignment)**
+یکی از مهم‌ترین مفاهیم: **ضریب همراستایی (Alignment Factor)**
 
 #### تعریف Alignment:
 
-```python
-def calculate_alignment_score(timeframe_signals: Dict[str, Dict]) -> float:
-    """
-    محاسبه همراستایی بین تایم‌فریم‌ها
+**نکته بسیار مهم:** Alignment بر اساس **indicators** محاسبه می‌شود نه timeframe weights!
 
-    خروجی: 0.0 تا 1.0
-    - 1.0 = کاملاً همسو
-    - 0.0 = کاملاً متضاد
+```python
+# signal_generator.py:4808-4856
+def _calculate_timeframe_alignment(
+    trend_directions: Dict[str, str],      # جهت روند هر TF
+    momentum_directions: Dict[str, str],   # جهت مومنتوم هر TF
+    macd_directions: Dict[str, str],       # جهت MACD هر TF
+    final_direction: str                   # جهت نهایی (bullish/bearish)
+) -> float:
     """
+    محاسبه ضریب همراستایی indicators با جهت نهایی
+
+    خروجی: 0.7 تا 1.3
+    - 1.3 = همراستایی کامل (100%)
+    - 1.0 = همراستایی متوسط
+    - 0.7 = همراستایی ضعیف یا متضاد
+    """
+```
+
+#### فرمول محاسبه:
+
+```python
+# مرحله 1: شمارش indicators همسو با جهت نهایی
+aligned_trend_count = 0
+total_trend_count = len(trend_directions)
+
+for tf, direction in trend_directions.items():
+    if (final_direction == 'bullish' and 'bullish' in direction) or \
+       (final_direction == 'bearish' and 'bearish' in direction):
+        aligned_trend_count += 1
+
+# مشابه برای momentum و MACD
+# ...
+
+# مرحله 2: محاسبه alignment وزن‌دار
+# وزن‌ها: Trend 50%, Momentum 30%, MACD 20%
+weighted_alignment = (
+    (aligned_trend_count / total_trend_count) * 0.5 +
+    (aligned_momentum_count / total_momentum_count) * 0.3 +
+    (aligned_macd_count / total_macd_count) * 0.2
+)
+
+# مرحله 3: تبدیل به ضریب بین 0.7 تا 1.3
+alignment_factor = 0.7 + (weighted_alignment * 0.6)
 ```
 
 #### مثال عملی:
 
 **حالت 1: همراستایی کامل ✅**
 ```python
-timeframe_signals = {
-    '5m':  {'direction': 'long',  'score': 68},
-    '15m': {'direction': 'long',  'score': 72},
-    '1h':  {'direction': 'long',  'score': 75},
-    '4h':  {'direction': 'long',  'score': 80}
+final_direction = 'bullish'
+
+# همه indicators در همه تایم‌فریم‌ها bullish هستند
+trend_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bullish', '4h': 'bullish'
+}
+momentum_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bullish', '4h': 'bullish'
+}
+macd_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bullish', '4h': 'bullish'
 }
 
-# همه تایم‌فریم‌ها long
-alignment_score = 1.0  # کامل! 🎯
+# محاسبه
+aligned_trend = 4/4 = 1.0
+aligned_momentum = 4/4 = 1.0
+aligned_macd = 4/4 = 1.0
+
+weighted_alignment = (1.0 * 0.5) + (1.0 * 0.3) + (1.0 * 0.2) = 1.0
+alignment_factor = 0.7 + (1.0 * 0.6) = 1.3  # حداکثر! ✅
 ```
 
 **حالت 2: همراستایی ضعیف ⚠️**
 ```python
-timeframe_signals = {
-    '5m':  {'direction': 'long',  'score': 65},
-    '15m': {'direction': 'long',  'score': 60},
-    '1h':  {'direction': 'short', 'score': 55},  # مخالف!
-    '4h':  {'direction': 'short', 'score': 70}   # مخالف!
+final_direction = 'bullish'
+
+# فقط تایم‌فریم‌های پایین bullish هستند
+trend_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bearish', '4h': 'bearish'
 }
-
-# تایم‌فریم‌های بالا مخالف هستند
-alignment_score = 0.35  # ضعیف!
-```
-
-#### فرمول محاسبه Alignment:
-
-```python
-# مرحله 1: شمارش جهت غالب
-long_weight = sum(TIMEFRAME_WEIGHTS[tf] for tf, sig in signals.items() if sig['direction'] == 'long')
-short_weight = sum(TIMEFRAME_WEIGHTS[tf] for tf, sig in signals.items() if sig['direction'] == 'short')
-
-# مرحله 2: تعیین جهت غالب
-dominant_direction = 'long' if long_weight > short_weight else 'short'
-dominant_weight = max(long_weight, short_weight)
-
-# مرحله 3: محاسبه alignment
-alignment = dominant_weight / sum(TIMEFRAME_WEIGHTS.values())
-```
-
-**مثال محاسبه:**
-```
-5m = long  (0.15)
-15m = long (0.20)
-1h = short (0.30)
-4h = short (0.35)
-
-long_weight = 0.15 + 0.20 = 0.35
-short_weight = 0.30 + 0.35 = 0.65
-
-dominant_direction = 'short'
-alignment = 0.65 / 1.0 = 0.65 (همراستایی متوسط)
-```
-
----
-
-### 5.4 محاسبه Weighted Score (امتیاز وزن‌دار)
-
-**محل:** `signal_generator.py:5122-5180`
-
-حالا که وزن‌ها و همراستایی را داریم، باید امتیاز نهایی را حساب کنیم:
-
-#### فرمول محاسبه:
-
-```python
-def calculate_weighted_score(timeframe_signals: Dict, alignment: float) -> float:
-    """
-    امتیاز = (مجموع امتیازات × وزن‌ها) × ضریب همراستایی
-    """
-
-    # مرحله 1: محاسبه امتیاز وزن‌دار پایه
-    base_score = 0
-    for tf, signal in timeframe_signals.items():
-        weight = TIMEFRAME_WEIGHTS[tf]
-        score = signal['score']
-        base_score += score * weight
-
-    # مرحله 2: اعمال ضریب همراستایی
-    alignment_multiplier = 0.7 + (alignment * 0.6)  # بین 0.7 تا 1.3
-
-    # مرحله 3: محاسبه نهایی
-    final_score = base_score * alignment_multiplier
-
-    return final_score
-```
-
-#### مثال کامل محاسبه:
-
-**شرایط:**
-```python
-timeframe_signals = {
-    '5m':  {'direction': 'long', 'score': 68},
-    '15m': {'direction': 'long', 'score': 72},
-    '1h':  {'direction': 'long', 'score': 75},
-    '4h':  {'direction': 'long', 'score': 80}
+momentum_directions = {
+    '5m': 'bullish', '15m': 'neutral', '1h': 'bearish', '4h': 'bearish'
 }
-```
-
-**محاسبات:**
-```
-مرحله 1: امتیاز وزن‌دار پایه
----------------------------------
-5m:  68 × 0.15 = 10.2
-15m: 72 × 0.20 = 14.4
-1h:  75 × 0.30 = 22.5
-4h:  80 × 0.35 = 28.0
----------------------------------
-base_score = 75.1
-
-مرحله 2: محاسبه همراستایی
----------------------------------
-alignment = 1.0 (همه long)
-alignment_multiplier = 0.7 + (1.0 × 0.6) = 1.3
-
-مرحله 3: امتیاز نهایی
----------------------------------
-final_score = 75.1 × 1.3 = 97.6 ✅
-```
-
-**نتیجه:** امتیاز 97.6 → سیگنال بسیار قوی! 🚀
-
----
-
-### 5.5 مثال مقایسه‌ای: همراستایی قوی vs ضعیف
-
-#### مثال A: همراستایی عالی (Alignment = 1.0)
-
-```python
-# داده‌ها
-signals_A = {
-    '5m':  {'direction': 'long', 'score': 65},
-    '15m': {'direction': 'long', 'score': 70},
-    '1h':  {'direction': 'long', 'score': 75},
-    '4h':  {'direction': 'long', 'score': 82}
+macd_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bearish', '4h': 'bearish'
 }
 
 # محاسبه
-base_score_A = (65×0.15) + (70×0.20) + (75×0.30) + (82×0.35)
-            = 9.75 + 14 + 22.5 + 28.7
-            = 74.95
+aligned_trend = 2/4 = 0.5
+aligned_momentum = 1/4 = 0.25
+aligned_macd = 2/4 = 0.5
 
-alignment_A = 1.0
-multiplier_A = 0.7 + (1.0 × 0.6) = 1.3
-
-final_score_A = 74.95 × 1.3 = 97.4 ✅
+weighted_alignment = (0.5 * 0.5) + (0.25 * 0.3) + (0.5 * 0.2) = 0.425
+alignment_factor = 0.7 + (0.425 * 0.6) = 0.955  # ضعیف ⚠️
 ```
 
-#### مثال B: همراستایی ضعیف (Alignment = 0.35)
-
-```python
-# داده‌ها
-signals_B = {
-    '5m':  {'direction': 'long', 'score': 70},
-    '15m': {'direction': 'long', 'score': 68},
-    '1h':  {'direction': 'short', 'score': 60},
-    '4h':  {'direction': 'short', 'score': 75}
-}
-
-# محاسبه
-base_score_B = (70×0.15) + (68×0.20) + (60×0.30) + (75×0.35)
-            = 10.5 + 13.6 + 18 + 26.25
-            = 68.35
-
-alignment_B = 0.35  # فقط 5m و 15m long
-multiplier_B = 0.7 + (0.35 × 0.6) = 0.91
-
-final_score_B = 68.35 × 0.91 = 62.2 ⚠️
-```
-
-#### مقایسه نتایج:
-
-| مورد | Base Score | Alignment | Multiplier | Final Score | نتیجه |
-|------|-----------|-----------|-----------|-------------|-------|
-| **A** | 74.95 | 1.0 | 1.3 | **97.4** | ✅ سیگنال قوی |
-| **B** | 68.35 | 0.35 | 0.91 | **62.2** | ⚠️ سیگنال ضعیف |
-
-**درس گرفته شده:**
-- هرچند امتیازات مثال B بد نبودند
-- ولی عدم همراستایی باعث کاهش 35% امتیاز شد!
-- این یک **مکانیزم حفاظتی** است
+**نکات مهم:**
+- ❌ Timeframe weights در این محاسبه استفاده **نمی‌شود**!
+- ✅ فقط **تعداد indicators همسو** شمارش می‌شود
+- ✅ Trend مهم‌ترین وزن را دارد (50%)
+- ✅ خروجی همیشه بین 0.7 تا 1.3 است
 
 ---
 
-### 5.6 Confluence Bonus (پاداش همگرایی)
+### 5.4 محاسبه امتیاز نهایی (Final Score Calculation)
 
-**محل:** `signal_generator.py:5182-5240`
+**محل:** `signal_generator.py:5197-5434` (calculate_multi_timeframe_score) و `5099-5112` (final score)
 
-وقتی چند تایم‌فریم **همزمان** سیگنال قوی می‌دهند، یک **پاداش اضافی** دریافت می‌کنند.
+#### مرحله 1: محاسبه Base Score
 
-#### شرایط Confluence:
-
-```python
-def check_confluence(timeframe_signals: Dict) -> Dict:
-    """
-    بررسی همگرایی سیگنال‌ها
-    """
-    confluence = {
-        'exists': False,
-        'strength': 0,
-        'bonus': 0
-    }
-
-    # شمارش سیگنال‌های قوی (score > 70)
-    strong_signals = [
-        tf for tf, sig in timeframe_signals.items()
-        if sig['score'] > 70 and sig['direction'] == dominant_direction
-    ]
-
-    # محاسبه پاداش
-    if len(strong_signals) >= 3:
-        confluence['exists'] = True
-        confluence['strength'] = len(strong_signals) / len(timeframe_signals)
-        confluence['bonus'] = 5 + (confluence['strength'] * 10)
-
-    return confluence
-```
-
-#### مثال Confluence:
+**محل:** `signal_generator.py:5206-5340`
 
 ```python
-signals = {
-    '5m':  {'direction': 'long', 'score': 78},  # قوی ✅
-    '15m': {'direction': 'long', 'score': 82},  # قوی ✅
-    '1h':  {'direction': 'long', 'score': 75},  # قوی ✅
-    '4h':  {'direction': 'long', 'score': 88}   # قوی ✅
-}
+# هر تایم‌فریم امتیازاتی تولید می‌کند
+for tf, result in analysis_results.items():
+    tf_weight = self.timeframe_weights.get(tf, 1.0)  # 0.7, 0.85, 1.0, 1.2
 
-# همه تایم‌فریم‌ها قوی!
-strong_count = 4
-confluence_strength = 4 / 4 = 1.0
-confluence_bonus = 5 + (1.0 × 10) = +15 امتیاز! 🎁
+    # امتیازات trend
+    trend_strength = result.get('trend', {}).get('strength', 0)
+    if trend_strength > 0:
+        bullish_score += trend_strength * tf_weight
+    else:
+        bearish_score += abs(trend_strength) * tf_weight
 
-final_score = weighted_score + confluence_bonus
+    # امتیازات momentum
+    bullish_score += result.get('momentum', {}).get('bullish_score', 0) * tf_weight
+    bearish_score += result.get('momentum', {}).get('bearish_score', 0) * tf_weight
+
+    # امتیازات MACD
+    bullish_score += result.get('macd', {}).get('bullish_score', 0) * tf_weight
+    bearish_score += result.get('macd', {}).get('bearish_score', 0) * tf_weight
+
+    # و همین‌طور برای price_action, patterns, channels, cycles, ...
+
+# امتیاز پایه = بالاترین امتیاز (bullish یا bearish)
+base_score = bullish_score if final_direction == 'bullish' else bearish_score
 ```
 
-**انواع Confluence:**
+#### مرحله 2: اعمال ضرایب مختلف
 
-| تعداد سیگنال قوی | Confluence | پاداش |
-|------------------|-----------|-------|
-| 1-2 | ضعیف | 0 |
-| 3 | خوب | +10 تا +12 |
-| 4 | عالی | +15 |
+**محل:** `signal_generator.py:5099-5112`
+
+**نکته بسیار مهم:** Alignment_factor مستقیماً بر امتیاز ضرب **نمی‌شود**! بلکه به عنوان بخشی از `macd_analysis_score` استفاده می‌شود:
+
+```python
+# محاسبه macd_analysis_score (شامل alignment_factor)
+# خط 5084
+alignment_factor = 0.7 تا 1.3  # از _calculate_timeframe_alignment
+macd_analysis_score = 1.0 + ((alignment_factor - 1.0) * 0.5)
+
+# مثال:
+# alignment_factor = 1.3 → macd_analysis_score = 1.15
+# alignment_factor = 1.0 → macd_analysis_score = 1.0
+# alignment_factor = 0.7 → macd_analysis_score = 0.85
+
+# محاسبه امتیاز نهایی (خطوط 5099-5112)
+final_score = (
+    base_score *
+    timeframe_weight *
+    trend_alignment *
+    volume_confirmation *
+    pattern_quality *
+    (1.0 + confluence_score) *
+    symbol_performance_factor *
+    correlation_safety_factor *
+    macd_analysis_score *           # ← alignment_factor اینجا است!
+    structure_score *
+    volatility_score *
+    harmonic_pattern_score *
+    price_channel_score *
+    cyclical_pattern_score
+)
+```
+
+#### مثال محاسبه واقعی:
+
+```python
+# فرض: همه تایم‌فریم‌ها bullish با امتیاز 50
+base_score = (50 * 0.7) + (50 * 0.85) + (50 * 1.0) + (50 * 1.2)
+base_score ≈ 187.5
+
+# ضرایب
+timeframe_weight = 1.25         # بر اساس higher TF confirmation
+trend_alignment = 1.1           # روند همسو
+volume_confirmation = 1.2       # حجم تأیید می‌کند
+pattern_quality = 1.2           # 2 pattern یافت شد
+confluence_score = 0.3          # RR خوب
+symbol_performance = 1.1        # عملکرد خوب سمبل
+correlation_safety = 1.0        # بدون همبستگی منفی
+alignment_factor = 1.3          # همراستایی کامل!
+macd_analysis_score = 1.0 + ((1.3 - 1.0) * 0.5) = 1.15
+structure_score = 1.1           # ساختار HTF خوب
+volatility_score = 1.0          # نوسان عادی
+harmonic_pattern_score = 1.2    # 1 الگوی هارمونیک
+price_channel_score = 1.0       # بدون کانال
+cyclical_pattern_score = 1.0    # بدون الگوی چرخه‌ای
+
+# محاسبه نهایی
+final_score = 187.5 * 1.25 * 1.1 * 1.2 * 1.2 * 1.3 * 1.1 * 1.0 * 1.15 * 1.1 * 1.0 * 1.2 * 1.0 * 1.0
+final_score ≈ 1089
+```
+
+**نکته کلیدی:**
+- Alignment تأثیر **کمی** دارد (فقط 50% از (alignment - 1.0))
+- Alignment فقط یکی از 13 ضریب مختلف است
+- امتیاز نهایی از ضرب base_score در همه ضرایب حاصل می‌شود
 
 ---
 
-### 5.7 جریان کامل محاسبه امتیاز
+### 5.5 تأثیر Alignment در امتیاز نهایی
 
-بیایید کل فرآیند را با یک مثال واقعی ببینیم:
+**توضیح مهم:**
+در کد واقعی، هر timeframe یک "score واحد" ندارد. در عوض، **تمام سیگنال‌های individual** (trend, momentum, MACD, patterns, S/R breakouts, etc.) از همه timeframes جمع‌آوری می‌شوند و هر سیگنال در وزن timeframe خودش (0.7, 0.85, 1.0, 1.2) ضرب می‌شود.
 
-#### شرایط اولیه:
+**محل در کد:** `signal_generator.py:5206-5422`
 
-```python
-# BTC/USDT - تحلیل در ساعت 14:00
-symbol = "BTC/USDT"
-current_price = 50000
-
-# نتایج تحلیل هر تایم‌فریم
-tf_analysis = {
-    '5m': {
-        'direction': 'long',
-        'score': 72,
-        'trend': 'bullish',
-        'macd_cross': True,
-        'rsi': 58,
-        'pattern': 'bullish_engulfing'
-    },
-    '15m': {
-        'direction': 'long',
-        'score': 78,
-        'trend': 'bullish',
-        'support_near': True,
-        'volume_confirmed': True
-    },
-    '1h': {
-        'direction': 'long',
-        'score': 82,
-        'trend': 'strong_bullish',
-        'harmonic_pattern': 'gartley',
-        'breakout': True
-    },
-    '4h': {
-        'direction': 'long',
-        'score': 85,
-        'trend': 'strong_bullish',
-        'regime': 'strong_trend_normal',
-        'channel': 'ascending'
-    }
-}
-```
-
-#### گام 1: محاسبه Base Score
+#### نحوه محاسبه واقعی:
 
 ```python
-base_score = 0
-details = []
+# برای هر timeframe:
+for tf in ['5m', '15m', '1h', '4h']:
+    tf_weight = timeframe_weights[tf]  # 0.7, 0.85, 1.0, 1.2
 
-# 5m
-score_5m = 72 × 0.15 = 10.8
-details.append("5m: 72 × 0.15 = 10.8")
+    # تمام سیگنال‌ها در وزن timeframe ضرب می‌شوند
+    bullish_score += trend_score * tf_weight
+    bullish_score += momentum_score * tf_weight
+    bullish_score += macd_score * tf_weight
+    bullish_score += pattern_score * tf_weight
+    # ... و بقیه سیگنال‌ها
 
-# 15m
-score_15m = 78 × 0.20 = 15.6
-details.append("15m: 78 × 0.20 = 15.6")
-
-# 1h
-score_1h = 82 × 0.30 = 24.6
-details.append("1h: 82 × 0.30 = 24.6")
-
-# 4h
-score_4h = 85 × 0.35 = 29.75
-details.append("4h: 85 × 0.35 = 29.75")
-
-base_score = 10.8 + 15.6 + 24.6 + 29.75 = 80.75
+# در نهایت:
+base_score = bullish_score  # (اگر جهت نهایی bullish باشد)
 ```
 
-#### گام 2: محاسبه Alignment
+#### تأثیر Alignment:
+
+Alignment به صورت **مستقیم** به عنوان ضریب استفاده نمی‌شود. در عوض، alignment_factor فقط در یکی از 13 ضریب نهایی (`macd_analysis_score`) تأثیر دارد:
 
 ```python
-# همه جهت long
-long_weight = 0.15 + 0.20 + 0.30 + 0.35 = 1.0
-short_weight = 0
+# signal_generator.py:5084
+macd_analysis_score = 1.0 + ((alignment_factor - 1.0) × 0.5)
 
-alignment = 1.0  # کامل!
-alignment_multiplier = 0.7 + (1.0 × 0.6) = 1.3
+# سپس در محاسبه final_score:
+final_score = base_score × ... × macd_analysis_score × ...
 ```
 
-#### گام 3: اعمال Alignment Multiplier
+**محدوده‌های alignment_factor:**
+- محدوده: 0.7 تا 1.3
+- اگر alignment_factor = 1.3 → macd_analysis_score = 1.15 (تأثیر +15%)
+- اگر alignment_factor = 0.7 → macd_analysis_score = 0.85 (تأثیر -15%)
 
-```python
-aligned_score = base_score × alignment_multiplier
-aligned_score = 80.75 × 1.3 = 104.98
-```
-
-#### گام 4: بررسی Confluence
-
-```python
-# تعداد سیگنال‌های قوی (>70)
-strong_signals = ['5m', '15m', '1h', '4h']  # همه قوی!
-confluence_strength = 4 / 4 = 1.0
-confluence_bonus = 5 + (1.0 × 10) = 15
-```
-
-#### گام 5: محاسبه Final Score
-
-```python
-final_score = aligned_score + confluence_bonus
-final_score = 104.98 + 15 = 119.98
-
-# نرمال‌سازی به 100
-if final_score > 100:
-    final_score = 100  # سقف
-```
-
-#### خلاصه نهایی:
-
-```
-─────────────────────────────────
-📊 تحلیل نهایی BTC/USDT
-─────────────────────────────────
-Base Score:        80.75
-Alignment:         1.0 (کامل)
-Multiplier:        ×1.3
-Aligned Score:     104.98
-Confluence Bonus:  +15
-─────────────────────────────────
-FINAL SCORE:       100/100 ✅
-─────────────────────────────────
-Signal: STRONG BUY 🚀
-Confidence: VERY HIGH
-─────────────────────────────────
-```
+**نتیجه:**
+تأثیر alignment بر امتیاز نهایی **غیرمستقیم** و **محدود** است (حداکثر ±15% از طریق یک ضریب)
 
 ---
 
-### 5.8 حالت‌های خاص و استثناها
+### 5.6 Confluence Score (ضریب همگرایی بر اساس Risk/Reward)
 
-#### حالت 1: تایم‌فریم ناقص
+**محل در کد:** `signal_generator.py:5082`
 
-```python
-# اگر داده یک تایم‌فریم موجود نباشد
-signals = {
-    '5m':  {'direction': 'long', 'score': 70},
-    '15m': {'direction': 'long', 'score': 75},
-    '1h':  None,  # داده ناقص!
-    '4h':  {'direction': 'long', 'score': 80}
-}
+**نکته مهم:** برخلاف نام، `confluence_score` در کد واقعی **بر اساس Risk/Reward ratio** محاسبه می‌شود، نه تعداد سیگنال‌های قوی!
 
-# راه‌حل: توزیع مجدد وزن‌ها
-available_tfs = ['5m', '15m', '4h']
-total_weight = 0.15 + 0.20 + 0.35 = 0.70
-
-# نرمال‌سازی وزن‌ها
-adjusted_weights = {
-    '5m': 0.15 / 0.70 = 0.214,
-    '15m': 0.20 / 0.70 = 0.286,
-    '4h': 0.35 / 0.70 = 0.500
-}
-
-# ادامه محاسبات با وزن‌های جدید
-```
-
-#### حالت 2: تضاد تایم‌فریم‌های بالا
+#### فرمول واقعی:
 
 ```python
-signals = {
-    '5m':  {'direction': 'long', 'score': 85},   # خیلی قوی!
-    '15m': {'direction': 'long', 'score': 80},
-    '1h':  {'direction': 'short', 'score': 75},  # مخالف
-    '4h':  {'direction': 'short', 'score': 82}   # مخالف
-}
+# signal_generator.py:5082
+score.confluence_score = min(0.5, max(0, (final_rr - min_rr) * 0.25))
 
-# محاسبه alignment
-long_weight = 0.15 + 0.20 = 0.35
-short_weight = 0.30 + 0.35 = 0.65
-
-# تایم‌فریم‌های بالا (1h + 4h) مخالف!
-alignment = 0.65  # اما برای short!
-
-# نتیجه: سیگنال long رد می‌شود ❌
-# چون با روند کلی (4h, 1h) مخالف است
+# سپس در محاسبه final_score به صورت multiplier استفاده می‌شود:
+final_score = base_score × ... × (1.0 + confluence_score) × ...
 ```
 
-**قانون مهم:**
-> اگر تایم‌فریم‌های 1h و 4h هر دو در یک جهت باشند (وزن 65%)، سیگنال‌های مخالف **رد می‌شوند**!
+#### توضیح:
+- `final_rr`: نسبت Risk/Reward محاسبه شده برای سیگنال
+- `min_rr`: حداقل RR مورد نیاز (معمولاً 1.5 یا 2.0)
+- اگر `final_rr > min_rr` → پاداش مثبت
+- اگر `final_rr = min_rr` → بدون پاداش (0)
+- حداکثر پاداش: 0.5 (یعنی ضریب 1.5)
 
-#### حالت 3: سیگنال‌های متناقض (Divergence)
+#### مثال‌ها:
 
+**مثال 1: RR عالی**
 ```python
-signals = {
-    '5m':  {'direction': 'long', 'score': 65},
-    '15m': {'direction': 'short', 'score': 60},  # متناقض!
-    '1h':  {'direction': 'long', 'score': 70},
-    '4h':  {'direction': 'short', 'score': 68}   # متناقض!
-}
+min_rr = 2.0
+final_rr = 4.0
 
-# محاسبه
-long_weight = 0.15 + 0.30 = 0.45
-short_weight = 0.20 + 0.35 = 0.55
+confluence_score = min(0.5, (4.0 - 2.0) × 0.25)
+                = min(0.5, 0.5)
+                = 0.5
 
-# تقریباً نصف نصف!
-alignment = 0.55  # ضعیف
-
-# ضریب کاهش شدید
-multiplier = 0.7 + (0.55 × 0.6) = 1.03
-
-# نتیجه: امتیاز نهایی پایین
-# توصیه: صبر کنید تا همگرایی بهتری ایجاد شود!
+multiplier = 1.0 + 0.5 = 1.5  # +50% پاداش!
 ```
+
+**مثال 2: RR متوسط**
+```python
+min_rr = 2.0
+final_rr = 2.8
+
+confluence_score = min(0.5, (2.8 - 2.0) × 0.25)
+                = min(0.5, 0.2)
+                = 0.2
+
+multiplier = 1.0 + 0.2 = 1.2  # +20% پاداش
+```
+
+**مثال 3: RR حداقل**
+```python
+min_rr = 2.0
+final_rr = 2.0
+
+confluence_score = min(0.5, (2.0 - 2.0) × 0.25)
+                = 0.0
+
+multiplier = 1.0 + 0.0 = 1.0  # بدون پاداش
+```
+
+**خلاصه:**
+
+| RR نسبت به min_rr | confluence_score | تأثیر |
+|-------------------|-----------------|-------|
+| RR = min_rr | 0.0 | ×1.0 (بدون تأثیر) |
+| RR = min_rr + 0.8 | 0.2 | ×1.2 (+20%) |
+| RR = min_rr + 1.6 | 0.4 | ×1.4 (+40%) |
+| RR ≥ min_rr + 2.0 | 0.5 | ×1.5 (+50%) |
 
 ---
 
-### 5.9 جدول خلاصه: تأثیر Alignment بر امتیاز
+### 5.7-5.10 مثال‌های محاسباتی (حذف شده)
 
-| Alignment | جهت غالب | تعداد همسو | Multiplier | تأثیر |
-|-----------|---------|-----------|-----------|-------|
-| 1.0 | همه یکسان | 4/4 | 1.3 | +30% 🚀 |
-| 0.85-0.99 | تقریباً همسو | 3/4 | 1.21-1.29 | +21-29% ✅ |
-| 0.65-0.84 | غالب | 2-3/4 | 1.09-1.20 | +9-20% ✅ |
-| 0.50-0.64 | ضعیف | 2/4 | 1.0-1.08 | 0-8% ⚠️ |
-| < 0.50 | متناقض | <2/4 | 0.7-0.99 | -1 تا -30% ❌ |
+**⚠️ توجه:** بخش‌های 5.7 تا 5.10 که شامل مثال‌های محاسباتی مفصل بودند **حذف شده‌اند** چون بر اساس ساده‌سازی نادرست سیستم نوشته شده بودند.
 
----
+**چرا حذف شدند؟**
 
-### 5.10 مثال واقعی: یک معامله کامل
+مثال‌های قبلی فرض می‌کردند:
+- ❌ هر timeframe یک "score واحد" دارد
+- ❌ base_score از وزن‌دار کردن این scores محاسبه می‌شود
+- ❌ alignment به صورت مستقیم ضریب می‌شود
+- ❌ confluence بر اساس تعداد timeframes قوی است
 
-بیایید یک سناریوی واقعی را از ابتدا تا انتها دنبال کنیم:
+**واقعیت:**
+- ✅ صدها سیگنال individual از همه timeframes جمع می‌شوند
+- ✅ هر سیگنال در وزن timeframe خودش ضرب می‌شود
+- ✅ base_score مجموع این سیگنال‌های weighted است
+- ✅ alignment فقط در یک ضریب (macd_analysis_score) تأثیر دارد
+- ✅ confluence بر اساس Risk/Reward ratio است
 
-#### زمینه:
-```
-نماد: ETH/USDT
-تاریخ: 2024-01-15
-ساعت: 10:30 UTC
-قیمت فعلی: 2,450 USDT
-```
-
-#### تحلیل تایم‌فریم‌ها:
-
-**5m (5 دقیقه):**
-```python
-{
-    'direction': 'long',
-    'score': 68,
-    'details': {
-        'macd_cross': True,           # +12
-        'rsi': 52,                    # neutral, +5
-        'bullish_engulfing': True,    # +18
-        'volume_spike': True,         # +8
-        'near_support': True,         # +10
-        'trend': 'bullish'            # +15
-    },
-    'raw_score': 68
-}
-```
-
-**15m (15 دقیقه):**
-```python
-{
-    'direction': 'long',
-    'score': 75,
-    'details': {
-        'stoch_cross': True,          # +10
-        'price_channel': 'bottom',    # +20
-        'volume_confirmed': True,     # ×1.2
-        'support_test': 3,            # +15
-        'trend': 'bullish',           # +18
-        'pattern_quality': 0.82       # +12
-    },
-    'raw_score': 75
-}
-```
-
-**1h (1 ساعت):**
-```python
-{
-    'direction': 'long',
-    'score': 82,
-    'details': {
-        'harmonic_gartley': True,     # +35
-        'macd_divergence': True,      # +25
-        'breakout_confirmed': True,   # +30
-        'regime': 'strong_trend',     # ×1.15
-        'channel_ascending': True,    # +20
-        'cycle_bottom': True          # +18
-    },
-    'raw_score': 82
-}
-```
-
-**4h (4 ساعت):**
-```python
-{
-    'direction': 'long',
-    'score': 88,
-    'details': {
-        'strong_uptrend': True,       # +25
-        'adx': 34,                    # روند قوی, +20
-        'ema_alignment': True,        # +15
-        'volume_trend': 'increasing', # +12
-        'higher_highs': True,         # +16
-        'regime': 'ideal'             # ×1.2
-    },
-    'raw_score': 88
-}
-```
-
-#### محاسبه گام به گام:
-
-```python
-# گام 1: Base Weighted Score
-score_5m = 68 × 0.15 = 10.20
-score_15m = 75 × 0.20 = 15.00
-score_1h = 82 × 0.30 = 24.60
-score_4h = 88 × 0.35 = 30.80
-base_score = 80.60
-
-# گام 2: Alignment
-all_long = True
-alignment = 1.0
-multiplier = 1.3
-
-# گام 3: Aligned Score
-aligned_score = 80.60 × 1.3 = 104.78
-
-# گام 4: Confluence
-strong_count = 4  # همه > 70
-confluence_bonus = 15
-
-# گام 5: Final Score
-final = min(104.78 + 15, 100) = 100
-```
-
-#### سیگنال نهایی:
-
-```
-╔══════════════════════════════════════╗
-║   🎯 SIGNAL GENERATED - ETH/USDT    ║
-╠══════════════════════════════════════╣
-║ Direction:     LONG (BUY)            ║
-║ Final Score:   100/100 ⭐⭐⭐⭐⭐        ║
-║ Confidence:    MAXIMUM               ║
-║ Alignment:     1.0 (Perfect)         ║
-║ Confluence:    4/4 Timeframes        ║
-╠══════════════════════════════════════╣
-║ Entry:         2,450 USDT            ║
-║ Stop Loss:     2,402 USDT (-1.96%)   ║
-║ Take Profit:   2,594 USDT (+5.88%)   ║
-║ Risk/Reward:   1:3.0                 ║
-╠══════════════════════════════════════╣
-║ Position Size: 2.5% of portfolio     ║
-║ Max Risk:      1.5% (adapted)        ║
-╚══════════════════════════════════════╝
-
-✅ All timeframes BULLISH
-✅ Strong trend confirmed (4h)
-✅ Harmonic pattern at 1h
-✅ Channel breakout at 1h
-✅ Volume confirmation
-
-⚠️ Risk Management:
-   - Trail stop after +3%
-   - Take 50% profit at TP1 (2,520)
-   - Let 50% run to TP2 (2,594)
-```
+**توصیه:**
+برای درک سیستم واقعی، کد را مستقیماً بخوانید:
+- `signal_generator.py:5197-5434` - محاسبه multi-timeframe score
+- `signal_generator.py:5099-5112` - محاسبه final score با 13 ضریب
 
 ---
 
@@ -5924,77 +5669,84 @@ final = min(104.78 + 15, 100) = 100
 
 #### ✅ DO's (کارهای درست):
 
-1. **همیشه به تایم‌فریم‌های بالاتر اولویت بده**
-   ```python
-   if score_4h < 60 and alignment < 0.6:
-       reject_signal()  # حتی اگر 5m قوی باشد
-   ```
+1. **به وزن timeframes بالاتر توجه کن**
+   - سیگنال‌های 4h وزن 1.2 دارند (بالاترین)
+   - سیگنال‌های 1h وزن 1.0 دارند
+   - اگر 4h و 1h هر دو در یک جهت باشند، اعتماد بیشتری داشته باش
 
-2. **صبر کن تا همگرایی ایجاد شود**
-   ```python
-   if alignment < 0.65:
-       wait_for_better_setup()
-   ```
+2. **به Risk/Reward توجه کن**
+   - RR بالاتر → confluence_score بالاتر → امتیاز نهایی بهتر
+   - هدف: RR > 2.0 × min_rr
 
-3. **در روند قوی، با روند حرکت کن**
-   ```python
-   if regime == 'strong_trend_bullish':
-       prefer_long_signals()
-   ```
+3. **به alignment indicators توجه کن**
+   - وقتی Trend, Momentum, و MACD همه در یک جهت هستند
+   - alignment_factor بالاتر → macd_analysis_score بهتر
 
 #### ❌ DON'Ts (کارهای غلط):
 
-1. **هرگز فقط به یک تایم‌فریم تکیه نکن**
-   ```python
-   # ❌ اشتباه
-   if score_5m > 80:
-       enter_trade()
+1. **فقط به یک indicator تکیه نکن**
+   - سیستم از ترکیب چندین سیگنال استفاده می‌کند
+   - قدرت در تعدد و تنوع سیگنال‌هاست
 
-   # ✅ درست
-   if score_5m > 70 and alignment > 0.7:
-       enter_trade()
-   ```
+2. **RR پایین را نادیده نگیر**
+   - اگر RR < min_rr → سیگنال رد می‌شود
+   - حتی اگر امتیازات بالا باشند
 
-2. **در خلاف جهت تایم‌فریم‌های بالا معامله نکن**
-   ```python
-   # ❌ اشتباه
-   if score_5m > 85:  # خیلی قوی!
-       enter_long()   # ولی 4h نزولی است!
-   ```
-
-3. **با alignment ضعیف معامله نکن**
-   ```python
-   if alignment < 0.5:
-       skip_signal()  # خطر بالا
-   ```
+3. **تضاد timeframes را نادیده نگیر**
+   - اگر 4h نزولی و 5m صعودی → alignment پایین
+   - احتمال شکست سیگنال بالاست
 
 ---
 
-### 5.12 خلاصه بخش 5: جدول کامل امتیازدهی
+### 5.12 خلاصه بخش 5: سیستم Multi-Timeframe
 
-| مؤلفه | محدوده | تأثیر | اهمیت |
-|-------|---------|-------|-------|
-| **Base Score (5m)** | 0-100 | ×0.15 | ⭐⭐ |
-| **Base Score (15m)** | 0-100 | ×0.20 | ⭐⭐⭐ |
-| **Base Score (1h)** | 0-100 | ×0.30 | ⭐⭐⭐⭐ |
-| **Base Score (4h)** | 0-100 | ×0.35 | ⭐⭐⭐⭐⭐ |
-| **Alignment** | 0.0-1.0 | ×0.7-1.3 | ⭐⭐⭐⭐⭐ |
-| **Confluence** | 0-15 | +0 تا +15 | ⭐⭐⭐⭐ |
-| **Final Score** | 0-100 | - | - |
+**محل در کد:** `signal_generator.py:5197-5434` و `signal_generator.py:5099-5112`
 
-#### فرمول نهایی:
+#### وزن‌های Timeframe:
+
+| Timeframe | وزن (Multiplier) | اهمیت |
+|-----------|-----------------|-------|
+| **5m** | 0.7 | ⭐⭐ |
+| **15m** | 0.85 | ⭐⭐⭐ |
+| **1h** | 1.0 | ⭐⭐⭐⭐ |
+| **4h** | 1.2 | ⭐⭐⭐⭐⭐ |
+
+#### فرمول واقعی Final Score:
+
+**محل:** `signal_generator.py:5099-5112`
 
 ```python
-Final_Score = min(
-    (
-        (Score_5m × 0.15) +
-        (Score_15m × 0.20) +
-        (Score_1h × 0.30) +
-        (Score_4h × 0.35)
-    ) × (0.7 + Alignment × 0.6) + Confluence_Bonus,
-    100
+final_score = (
+    base_score ×                          # مجموع تمام سیگنال‌های weighted
+    timeframe_weight ×                    # 1.0 + (higher_tf_ratio × factor)
+    trend_alignment ×                     # بر اساس قدرت روند
+    volume_confirmation ×                 # 1.0 تا 1.4
+    pattern_quality ×                     # 1.0 + (pattern_count × 0.1)
+    (1.0 + confluence_score) ×           # بر اساس RR: 1.0 تا 1.5
+    symbol_performance_factor ×           # یادگیری تطبیقی
+    correlation_safety_factor ×           # مدیریت همبستگی
+    macd_analysis_score ×                # 0.85 تا 1.15 (شامل alignment!)
+    structure_score ×                     # ساختار HTF
+    volatility_score ×                    # ضریب نوسان
+    harmonic_pattern_score ×             # 1.0 + (harmonic_count × 0.2)
+    price_channel_score ×                # 1.0 + (channel_count × 0.1)
+    cyclical_pattern_score               # 1.0 + (cycle_count × 0.05)
 )
 ```
+
+#### نکات کلیدی:
+
+1. **base_score** = مجموع وزن‌دار تمام سیگنال‌ها از همه timeframes
+   ```python
+   # هر سیگنال در وزن timeframe خودش ضرب می‌شود
+   signal_weighted = signal_score × timeframe_weight[tf]
+   ```
+
+2. **alignment_factor** فقط در `macd_analysis_score` تأثیر دارد (تأثیر محدود: ±15%)
+
+3. **confluence_score** بر اساس RR است، نه تعداد timeframes قوی
+
+4. **13 ضریب مختلف** در امتیاز نهایی دخالت دارند
 
 ---
 
@@ -6002,18 +5754,19 @@ Final_Score = min(
 
 🎯 **نکته کلیدی:**
 
-> قدرت واقعی این سیستم در **ترکیب هوشمند** تایم‌فریم‌هاست، نه تحلیل تک تایم‌فریم!
+> قدرت واقعی این سیستم در **جمع‌آوری و وزن‌دهی صدها سیگنال** از چند تایم‌فریم است، سپس ضرب آنها در **13 ضریب مختلف**.
 
 **چه چیزی این سیستم را قدرتمند می‌کند:**
 
-1. ✅ **وزن‌دهی پویا** - تایم‌فریم‌های مهم‌تر اثر بیشتری دارند
-2. ✅ **همراستایی اجباری** - جلوگیری از سیگنال‌های متناقض
-3. ✅ **پاداش همگرایی** - تشویق سیگنال‌های قوی چند تایم‌فریمی
-4. ✅ **مکانیزم حفاظتی** - کاهش خودکار امتیاز در شرایط مبهم
+1. ✅ **تجمیع سیگنال‌ها** - همه سیگنال‌های trend, momentum, MACD, patterns و غیره از همه timeframes
+2. ✅ **وزن‌دهی تایم‌فریم** - سیگنال‌های 4h وزن 1.2 دارند، 5m فقط 0.7
+3. ✅ **13 ضریب مختلف** - هر ضریب جنبه خاصی را بررسی می‌کند
+4. ✅ **فیلتر RR** - سیگنال‌هایی با RR < min_rr رد می‌شوند
+5. ✅ **پاداش RR بالا** - confluence_score تا +50% برای RR عالی
 
 **اهمیت این بخش:**
 
-در بازارهای مالی، **کاهش نویز** بسیار مهم‌تر از یافتن سیگنال است. این سیستم با ترکیب چند تایم‌فریم، **نویز را فیلتر می‌کند** و فقط سیگنال‌های واقعاً قوی را باقی می‌گذارد.
+سیستم **پیچیده‌تر از چیزی است که در ابتدا به نظر می‌رسد**. نه یک فرمول ساده، بلکه یک **pipeline چند مرحله‌ای** با فیلترها و ضرایب متعدد.
 
 ---
 
@@ -6021,1094 +5774,251 @@ Final_Score = min(
 
 ---
 
-## بخش ۶: ML/AI Enhancement و محاسبه Final Score
+## بخش ۶: Ensemble Strategy و تولید سیگنال نهایی
 
-پس از محاسبه امتیاز وزن‌دار چند تایم‌فریمی، سیستم وارد **مرحله نهایی** می‌شود که در آن از هوش مصنوعی و فیلترهای پیشرفته استفاده می‌شود تا سیگنال نهایی را تولید کند.
+⚠️ **توضیح مهم:** برخلاف عنوان اولیه این بخش، سیستم فعلی **هیچ ML/AI model** (XGBoost, RandomForest, LSTM) ندارد.
 
-### 6.1 نقش Machine Learning در سیستم
+### 6.1 واقعیت Ensemble Strategy
 
-**محل:** `signal_generator.py:5242-5450` و `ensemble_strategy.py`
+**محل:** `ensemble_strategy.py:1-2200`
 
-این سیستم از **دو رویکرد** استفاده می‌کند:
+`ensemble_strategy.py` یک **Voting-Based Ensemble** است، نه ML Ensemble.
 
-1. **Rule-Based Scoring** (امتیازدهی قانون‌محور) → بخش‌های 1-5
-2. **ML Enhancement** (بهبود با یادگیری ماشین) → این بخش
+#### چیست؟
 
-#### چرا ML؟
-
-**مشکلات روش قانون‌محور:**
-- پارامترهای ثابت برای همه شرایط
-- عدم یادگیری از معاملات گذشته
-- نمی‌تواند الگوهای پیچیده را تشخیص دهد
-
-**راه‌حل ML:**
-- یادگیری از تاریخچه معاملات
-- تشخیص الگوهای پنهان
-- تطبیق خودکار با تغییرات بازار
-
----
-
-### 6.2 Ensemble Strategy (استراتژی ترکیبی)
-
-**محل:** `ensemble_strategy.py:1-800`
-
-سیستم از **Ensemble Learning** استفاده می‌کند که چندین مدل ML را با هم ترکیب می‌کند.
-
-#### ساختار Ensemble:
+این ماژول از **چندین SignalGenerator** با تنظیمات مختلف استفاده می‌کند و بر اساس **رأی‌گیری وزن‌دار** سیگنال نهایی را تولید می‌کند.
 
 ```python
-class EnsembleStrategy:
+class StrategyEnsemble:
     """
-    ترکیب چند استراتژی و مدل ML برای تولید سیگنال بهتر
+    ترکیب چند استراتژی قانون-محور (نه ML!)
     """
-
-    def __init__(self):
-        self.models = {
-            'xgboost': XGBoostModel(),      # مدل اصلی
-            'random_forest': RFModel(),     # مدل پشتیبان
-            'lstm': LSTMModel(),            # برای پیش‌بینی سری زمانی
+    def __init__(self, config):
+        self.strategies = {
+            'trend_following': SignalGenerator(config_1),
+            'mean_reversion': SignalGenerator(config_2),
+            'breakout': SignalGenerator(config_3),
+            # ...
         }
+
         self.weights = {
-            'xgboost': 0.5,       # 50% وزن
-            'random_forest': 0.3,  # 30% وزن
-            'lstm': 0.2           # 20% وزن
+            'trend_following': 0.4,
+            'mean_reversion': 0.3,
+            'breakout': 0.3
         }
 ```
 
-#### مدل‌های ML استفاده شده:
+#### نحوه کار:
 
-**1. XGBoost (مدل اصلی)**
-- **کاربرد:** پیش‌بینی احتمال موفقیت سیگنال
-- **ورودی‌ها:**
-  - امتیازات تایم‌فریم‌ها (5m, 15m, 1h, 4h)
-  - Alignment score
-  - Market regime
-  - تحلیل‌های تکنیکال (RSI, MACD, etc.)
-  - ویژگی‌های حجم معاملات
-  - نوسانات بازار
-
-- **خروجی:**
-  - احتمال موفقیت (0.0 تا 1.0)
-  - ضریب اعتماد (confidence)
-
-**مثال:**
-```python
-features = {
-    'score_5m': 72,
-    'score_15m': 78,
-    'score_1h': 82,
-    'score_4h': 85,
-    'alignment': 1.0,
-    'regime': 'strong_trend_normal',
-    'rsi_5m': 58,
-    'macd_cross_1h': 1,
-    'volume_ratio': 1.8,
-    'volatility': 0.8,
-    # ... 50+ features دیگر
-}
-
-prediction = xgboost_model.predict(features)
-# output: {'success_probability': 0.78, 'confidence': 0.85}
-```
-
-**2. Random Forest (مدل پشتیبان)**
-- **کاربرد:** تأیید سیگنال و کاهش False Positives
-- **روش:** رأی‌گیری از چندین Decision Tree
-- **تأثیر:** اگر با XGBoost موافق باشد → افزایش اعتماد
-
-**3. LSTM (Long Short-Term Memory)**
-- **کاربرد:** پیش‌بینی روند آینده قیمت
-- **ورودی:** 100 کندل اخیر
-- **خروجی:** جهت احتمالی 20 کندل آینده
-- **تأثیر:** تأیید یا رد سیگنال بر اساس پیش‌بینی
+1. هر استراتژی (SignalGenerator) سیگنال خود را تولید می‌کند
+2. اگر اکثریت وزن‌دار موافق باشند → سیگنال تأیید می‌شود
+3. هیچ یادگیری ماشینی در کار نیست
 
 ---
 
-### 6.3 فرآیند ML Enhancement
+امیدوارم این مستند به شما کمک کند تا فرآیند تولید سیگنال را به طور کامل درک کنید! 🚀
 
-**محل:** `ensemble_strategy.py:245-450`
+### 6.2 محاسبه Stop Loss و Take Profit
 
+**محل:** `signal_generator.py:4029-4269`
+
+#### نحوه محاسبه:
+
+سیستم stop_loss و take_profit را **بر اساس نوع pattern** محاسبه می‌کند:
+
+**1. برای Harmonic Patterns:**
 ```python
-async def enhance_signal_with_ml(
-    self,
-    base_score: float,
-    signal_data: Dict,
-    market_data: Dict
-) -> Dict:
-    """
-    بهبود سیگنال با استفاده از ML
-    """
-```
-
-#### گام 1: استخراج ویژگی‌ها (Feature Extraction)
-
-```python
-features = self._extract_features(signal_data, market_data)
-```
-
-**ویژگی‌های استخراج شده (100+ features):**
-
-| دسته | مثال‌ها | تعداد |
-|------|---------|-------|
-| **Scores** | score_5m, score_15m, score_1h, score_4h | 4 |
-| **Technical** | rsi, macd, stoch, adx, cci | 20 |
-| **Price Action** | pattern_type, candle_type | 15 |
-| **Volume** | volume_ratio, volume_trend | 8 |
-| **Trend** | ema_alignment, trend_strength | 12 |
-| **Volatility** | atr, bollinger_width | 6 |
-| **Market Regime** | regime_encoded, adx, di_diff | 5 |
-| **Time-based** | hour_of_day, day_of_week | 4 |
-| **Cross-TF** | alignment, confluence | 6 |
-| **Historical** | win_rate_symbol, avg_profit | 8 |
-| **Others** | support_distance, resistance_distance | 12+ |
-
-#### گام 2: پیش‌بینی با هر مدل
-
-```python
-# XGBoost prediction
-xgb_pred = self.models['xgboost'].predict_proba(features)
-xgb_score = xgb_pred[1]  # احتمال کلاس مثبت (موفقیت)
-
-# Random Forest prediction
-rf_pred = self.models['random_forest'].predict_proba(features)
-rf_score = rf_pred[1]
-
-# LSTM prediction
-lstm_pred = self.models['lstm'].predict(price_sequence)
-lstm_direction = 'bullish' if lstm_pred > 0.5 else 'bearish'
-```
-
-#### گام 3: ترکیب پیش‌بینی‌ها
-
-```python
-# Weighted ensemble
-ensemble_score = (
-    xgb_score * self.weights['xgboost'] +
-    rf_score * self.weights['random_forest'] +
-    lstm_score * self.weights['lstm']
-)
-
-# Confidence calculation
-confidence = calculate_confidence([xgb_score, rf_score, lstm_score])
-```
-
-**فرمول Confidence:**
-```python
-# هرچه مدل‌ها نظر یکسانی داشته باشند → confidence بالاتر
-std_dev = np.std([xgb_score, rf_score, lstm_score])
-confidence = 1.0 - (std_dev / 0.5)  # normalize to 0-1
-```
-
-**مثال:**
-```python
-xgb_score = 0.82
-rf_score = 0.78
-lstm_score = 0.85
-
-# Ensemble
-ensemble = 0.82*0.5 + 0.78*0.3 + 0.85*0.2 = 0.81
-
-# Confidence
-std_dev = 0.029
-confidence = 1.0 - (0.029 / 0.5) = 0.94  # بالا → مدل‌ها موافق هستند
-```
-
-#### گام 4: محاسبه ML Adjustment Factor
-
-```python
-ml_adjustment = 0.8 + (ensemble_score * 0.4)  # بین 0.8 تا 1.2
-```
-
-**منطق:**
-- ensemble_score = 1.0 → adjustment = 1.2 (افزایش 20%)
-- ensemble_score = 0.5 → adjustment = 1.0 (بدون تغییر)
-- ensemble_score = 0.0 → adjustment = 0.8 (کاهش 20%)
-
----
-
-### 6.4 محاسبه Final Score
-
-**محل:** `signal_generator.py:5452-5600`
-
-حالا همه چیز آماده است تا امتیاز نهایی را حساب کنیم:
-
-```python
-def calculate_final_score(
-    weighted_score: float,      # از بخش 5
-    confluence_bonus: float,    # از بخش 5
-    ml_adjustment: float,       # از بخش 6
-    regime_multiplier: float,   # از بخش 4
-    volatility_score: float     # از بخش 3
-) -> float:
-    """
-    محاسبه امتیاز نهایی با تمام فیلترها
-    """
-
-    # مرحله 1: Base Final Score
-    base_final = (weighted_score + confluence_bonus) * ml_adjustment
-
-    # مرحله 2: اعمال Regime Multiplier
-    regime_adjusted = base_final * regime_multiplier
-
-    # مرحله 3: اعمال Volatility Factor
-    volatility_adjusted = regime_adjusted * volatility_score
-
-    # مرحله 4: نرمال‌سازی به 0-100
-    final_score = min(max(volatility_adjusted, 0), 100)
-
-    return final_score
-```
-
-#### مثال محاسبه کامل:
-
-```python
-# ورودی‌ها
-weighted_score = 80.75        # از بخش 5
-confluence_bonus = 15         # از بخش 5
-ml_adjustment = 1.15          # XGBoost: 0.82 → 1.15
-regime_multiplier = 1.1       # strong_trend_normal
-volatility_score = 0.95       # normal volatility
-
-# محاسبه
-step1 = (80.75 + 15) * 1.15 = 110.1
-step2 = 110.1 * 1.1 = 121.1
-step3 = 121.1 * 0.95 = 115.0
-final = min(115.0, 100) = 100
-
-# نتیجه: امتیاز نهایی = 100 ✅
-```
-
----
-
-### 6.5 فیلترهای نهایی (Final Filters)
-
-**محل:** `signal_generator.py:5602-5750`
-
-قبل از تأیید نهایی سیگنال، چند فیلتر حیاتی اعمال می‌شود:
-
-#### فیلتر 1: حداقل امتیاز (Minimum Score)
-
-```python
-MIN_SIGNAL_SCORE = 33  # پیش‌فرض (تطبیق‌پذیر با regime)
-
-if final_score < MIN_SIGNAL_SCORE:
-    reject_signal("Score too low")
-```
-
-**حداقل امتیاز بر اساس Regime:**
-```python
-regime_min_scores = {
-    'strong_trend_normal': 33,      # آسان‌تر
-    'strong_trend_high': 36,        # سخت‌تر (نوسان بالا)
-    'weak_trend_normal': 35,        # متوسط
-    'range_normal': 38,             # خیلی سخت (رنج)
-    'range_high': 42                # سخت‌ترین (رنج + نوسان)
-}
-```
-
-#### فیلتر 2: ML Confidence Threshold
-
-```python
-MIN_ML_CONFIDENCE = 0.65
-
-if ml_confidence < MIN_ML_CONFIDENCE:
-    reject_signal("ML confidence too low")
-```
-
-**مثال:**
-```python
-# مدل‌های ML نظرات متفاوتی دارند
-xgb_score = 0.75
-rf_score = 0.45   # خیلی کمتر!
-lstm_score = 0.68
-
-# Confidence پایین می‌آید
-confidence = 0.58 < 0.65
-# → سیگنال رد می‌شود ❌
-```
-
-#### فیلتر 3: Alignment Threshold
-
-```python
-MIN_ALIGNMENT = 0.6
-
-if alignment < MIN_ALIGNMENT:
-    reject_signal("Timeframes not aligned")
-```
-
-**مثال:**
-```python
-# تایم‌فریم‌های بالا مخالف هستند
-alignment = 0.55 < 0.6
-# → سیگنال رد می‌شود ❌
-```
-
-#### فیلتر 4: Recent Performance Filter
-
-```python
-# بررسی عملکرد اخیر نماد
-recent_win_rate = get_recent_win_rate(symbol, last_n=10)
-
-if recent_win_rate < 0.3:  # کمتر از 30% موفقیت
-    apply_penalty = True
-    final_score *= 0.85  # کاهش 15%
-```
-
-**منطق:**
-اگر در 10 معامله اخیر روی این نماد عملکرد ضعیف داشتیم → احتیاط بیشتر
-
-#### فیلتر 5: Correlation Filter
-
-```python
-# بررسی همبستگی با نمادهای موجود در پورتفولیو
-if has_open_position():
-    correlation = calculate_correlation(symbol, open_positions)
-
-    if correlation > 0.8:  # همبستگی بالا
-        reject_signal("Too correlated with existing positions")
-```
-
-**منطق:**
-جلوگیری از خرید نمادهایی که با موقعیت‌های فعلی همبستگی بالا دارند → کاهش ریسک
-
-#### فیلتر 6: Drawdown Protection
-
-```python
-# بررسی drawdown کلی
-current_drawdown = get_current_drawdown()
-
-if current_drawdown > 0.15:  # بیش از 15% ضرر
-    MIN_SIGNAL_SCORE += 10  # افزایش حد آستانه
-    # فقط سیگنال‌های قوی‌تر پذیرفته می‌شوند
-```
-
----
-
-### 6.6 محاسبه Entry, Stop Loss, Take Profit
-
-**محل:** `signal_generator.py:5752-5950`
-
-وقتی سیگنال تأیید شد، باید نقاط ورود و خروج را حساب کنیم.
-
-#### محاسبه Entry Price:
-
-```python
-def calculate_entry_price(current_price: float, signal_direction: str) -> float:
-    """
-    نقطه ورود بهینه بر اساس جهت سیگنال
-    """
-
-    if signal_direction == 'long':
-        # ورود در قیمت فعلی یا کمی پایین‌تر
-        entry = current_price * 0.999  # 0.1% پایین‌تر
-    else:  # short
-        # ورود در قیمت فعلی یا کمی بالاتر
-        entry = current_price * 1.001  # 0.1% بالاتر
-
-    return entry
-```
-
-#### محاسبه Stop Loss:
-
-**روش 1: ATR-based (پویا)**
-```python
-def calculate_atr_stop_loss(
-    entry: float,
-    atr: float,
-    direction: str,
-    multiplier: float = 2.0
-) -> float:
-    """
-    حد ضرر بر اساس ATR (نوسان بازار)
-    """
-
-    stop_distance = atr * multiplier
-
-    if direction == 'long':
-        stop_loss = entry - stop_distance
-    else:  # short
-        stop_loss = entry + stop_distance
-
-    return stop_loss
-```
-
-**روش 2: Support/Resistance-based**
-```python
-def calculate_sr_stop_loss(
-    entry: float,
-    support: float,
-    resistance: float,
-    direction: str
-) -> float:
-    """
-    حد ضرر بر اساس سطوح حمایت/مقاومت
-    """
-
-    if direction == 'long':
-        # زیر سطح حمایت
-        stop_loss = support * 0.995  # 0.5% زیرتر
-    else:  # short
-        # بالای سطح مقاومت
-        stop_loss = resistance * 1.005  # 0.5% بالاتر
-
-    return stop_loss
-```
-
-**روش 3: Percentage-based (ثابت)**
-```python
-def calculate_percentage_stop_loss(
-    entry: float,
-    direction: str,
-    percent: float = 1.5  # تطبیق‌پذیر با regime
-) -> float:
-    """
-    حد ضرر درصدی ثابت
-    """
-
-    if direction == 'long':
-        stop_loss = entry * (1 - percent/100)
-    else:  # short
-        stop_loss = entry * (1 + percent/100)
-
-    return stop_loss
-```
-
-**انتخاب بهترین روش:**
-```python
-# محاسبه با هر سه روش
-atr_sl = calculate_atr_stop_loss(...)
-sr_sl = calculate_sr_stop_loss(...)
-pct_sl = calculate_percentage_stop_loss(...)
-
-# انتخاب محافظه‌کارانه‌تر (نزدیک‌تر به entry)
+# signal_generator.py:4074-4089
 if direction == 'long':
-    final_sl = max(atr_sl, sr_sl, pct_sl)
-else:
-    final_sl = min(atr_sl, sr_sl, pct_sl)
-```
-
-#### محاسبه Take Profit:
-
-```python
-def calculate_take_profit(
-    entry: float,
-    stop_loss: float,
-    direction: str,
-    risk_reward_ratio: float = 2.5  # تطبیق‌پذیر با regime
-) -> Dict[str, float]:
-    """
-    محاسبه چند سطح Take Profit
-    """
-
-    # محاسبه ریسک
-    if direction == 'long':
-        risk = entry - stop_loss
+    stop_loss = d_point_price * 0.99  # کمی پایین‌تر از نقطه D
+    if has_fibonacci_extension:
+        take_profit = current_price + (current_price - stop_loss) * 1.618
     else:
-        risk = stop_loss - entry
-
-    # محاسبه پاداش
-    reward = risk * risk_reward_ratio
-
-    # Take Profit اصلی
-    if direction == 'long':
-        tp_main = entry + reward
-    else:
-        tp_main = entry - reward
-
-    # Take Profit‌های میانی (برای خروج تدریجی)
-    tp1 = entry + (reward * 0.5)   # 50% سود
-    tp2 = entry + (reward * 0.75)  # 75% سود
-    tp3 = tp_main                   # 100% سود
-
-    return {
-        'tp1': tp1,  # خروج 30% پوزیشن
-        'tp2': tp2,  # خروج 30% پوزیشن
-        'tp3': tp3,  # خروج 40% پوزیشن
-    }
+        take_profit = x_point_price  # نقطه X
 ```
 
-#### محاسبه Position Size:
-
+**2. برای Price Channels:**
 ```python
-def calculate_position_size(
-    account_balance: float,
-    entry: float,
-    stop_loss: float,
-    max_risk_percent: float = 1.5  # تطبیق‌پذیر با regime
-) -> float:
-    """
-    محاسبه اندازه پوزیشن بر اساس ریسک
-    """
-
-    # مقدار ریسک مجاز (به دلار)
-    risk_amount = account_balance * (max_risk_percent / 100)
-
-    # فاصله تا Stop Loss (درصد)
-    sl_distance = abs((entry - stop_loss) / entry)
-
-    # محاسبه اندازه پوزیشن
-    position_value = risk_amount / sl_distance
-
-    # محدود کردن به حداکثر مجاز (مثلاً 5% پورتفولیو)
-    max_position_value = account_balance * 0.05
-    position_value = min(position_value, max_position_value)
-
-    # تبدیل به تعداد واحد
-    position_size = position_value / entry
-
-    return position_size
+# signal_generator.py:4101-4123
+if direction == 'long':
+    stop_loss = lower_channel_line * 0.99
+    take_profit = upper_channel_line * 0.99
 ```
 
-**مثال عملی:**
+**3. برای Support/Resistance:**
 ```python
-# فرض: حساب 10,000 USDT
-account_balance = 10000
-entry = 50000  # BTC
-stop_loss = 49000  # 2% فاصله
-max_risk_percent = 1.5  # ریسک 1.5% در هر معامله
+# signal_generator.py:4134-4207
+if direction == 'long':
+    stop_loss = nearest_support * 0.999
+    # بررسی فاصله تا نزدیک‌ترین مقاومت
+    if nearest_resistance > current_price + (risk_distance * min_rr):
+        take_profit = nearest_resistance * 0.999
+```
 
-# محاسبه
-risk_amount = 10000 * 0.015 = 150 USDT
-sl_distance = (50000 - 49000) / 50000 = 0.02 (2%)
-position_value = 150 / 0.02 = 7500 USDT
-position_size = 7500 / 50000 = 0.15 BTC
+**4. درصدی ثابت (Fallback):**
+```python
+# signal_generator.py:4240-4263
+default_sl_percent = adapted_risk_config.get('default_stop_loss_percent', 1.5)
 
-# اگر BTC به SL برسد → ضرر = 150 USDT (1.5% کل پورتفولیو) ✅
+if direction == 'long':
+    stop_loss = current_price * (1 - default_sl_percent/100)
+    take_profit = current_price * (1 + (default_sl_percent * min_rr) / 100)
 ```
 
 ---
 
-### 6.7 تولید سیگنال نهایی (Final Signal Generation)
+### 6.3 فیلترهای نهایی
 
-**محل:** `signal_generator.py:5952-6100`
+قبل از تأیید سیگنال، چند فیلتر مهم اعمال می‌شود:
+
+#### 1. فیلتر Risk/Reward Ratio
+
+**محل:** `signal_generator.py:5037-5048`
 
 ```python
-def generate_final_signal(
-    symbol: str,
-    direction: str,
-    final_score: float,
-    ml_confidence: float,
-    analysis_data: Dict
-) -> TradingSignal:
-    """
-    تولید سیگنال نهایی با تمام جزئیات
-    """
+min_rr = adapted_risk_config.get('min_risk_reward_ratio', self.base_min_risk_reward_ratio)
 
-    # محاسبه قیمت‌ها
-    entry = calculate_entry_price(current_price, direction)
-    stop_loss = calculate_stop_loss(entry, direction, analysis_data)
-    take_profits = calculate_take_profit(entry, stop_loss, direction)
+if final_rr < min_rr:
+    # سیگنال رد می‌شود
+```
 
-    # محاسبه اندازه پوزیشن
-    position_size = calculate_position_size(
-        account_balance, entry, stop_loss
+#### 2. فیلتر حداقل امتیاز
+
+**محل:** `signal_generator.py:5116-5125`
+
+```python
+min_score = adapted_signal_config.get('minimum_signal_score', self.base_minimum_signal_score)
+
+if score.final_score < min_score:
+    # سیگنال رد می‌شود
+```
+
+حداقل امتیاز بر اساس **regime** تطبیق می‌یابد:
+- `strong_trend_normal`: حداقل 33
+- `strong_trend_high`: حداقل 36 (سخت‌تر)
+- `weak_trend_normal`: حداقل 35
+- `range` modes: حداقل 38-42 (سخت‌ترین)
+
+#### 3. فیلتر Volatility
+
+**محل:** `signal_generator.py:5334-5357`
+
+```python
+volatility_data = result.get('volatility_analysis', {})
+vol_reject_signal = volatility_data.get('reject_signal', False)
+
+if vol_reject_signal:
+    # سیگنال رد می‌شود (نوسان خیلی بالا یا پایین)
+```
+
+#### 4. فیلتر Correlation (اگر فعال باشد)
+
+**محل:** `signal_generator.py:5063-5069`
+
+```python
+if self.correlation_manager.enabled:
+    correlation_safety = self.correlation_manager.get_correlation_safety_factor(
+        symbol, direction
     )
-
-    # ساخت شیء سیگنال
-    signal = TradingSignal(
-        symbol=symbol,
-        direction=direction,
-        signal_type='LONG' if direction == 'long' else 'SHORT',
-        score=final_score,
-        confidence=ml_confidence,
-
-        # قیمت‌ها
-        entry_price=entry,
-        stop_loss=stop_loss,
-        take_profit_1=take_profits['tp1'],
-        take_profit_2=take_profits['tp2'],
-        take_profit_3=take_profits['tp3'],
-
-        # اندازه پوزیشن
-        position_size=position_size,
-        risk_amount=calculate_risk(entry, stop_loss, position_size),
-        reward_amount=calculate_reward(entry, take_profits['tp3'], position_size),
-        risk_reward_ratio=calculate_rr_ratio(...),
-
-        # تحلیل‌ها
-        timeframe_scores={
-            '5m': analysis_data['5m']['score'],
-            '15m': analysis_data['15m']['score'],
-            '1h': analysis_data['1h']['score'],
-            '4h': analysis_data['4h']['score'],
-        },
-        alignment=analysis_data['alignment'],
-        confluence=analysis_data['confluence'],
-        market_regime=analysis_data['regime'],
-
-        # توضیحات
-        signal_reasons=[
-            'Strong uptrend on 4h timeframe',
-            'Bullish harmonic pattern on 1h',
-            'MACD cross on 15m',
-            'Support bounce on 5m',
-            'High volume confirmation',
-            'ML confidence: 0.85'
-        ],
-
-        # زمان
-        timestamp=datetime.now(),
-        valid_until=datetime.now() + timedelta(hours=4),
-    )
-
-    return signal
+    # اگر همبستگی بالا باشد، امتیاز کاهش می‌یابد
 ```
 
 ---
 
-### 6.8 مثال کامل: از ابتدا تا انتها
+### 6.4 تولید سیگنال نهایی
 
-بیایید یک سیگنال را از صفر تا صد دنبال کنیم:
+**محل:** `signal_generator.py:5125-5195`
 
-#### ورودی اولیه:
-
-```python
-symbol = "BTC/USDT"
-current_price = 50000
-account_balance = 10000
-```
-
-#### نتایج تحلیل تایم‌فریم‌ها:
+پس از عبور از تمام فیلترها، سیگنال نهایی تولید می‌شود:
 
 ```python
-timeframe_analysis = {
-    '5m': {'score': 72, 'direction': 'long'},
-    '15m': {'score': 78, 'direction': 'long'},
-    '1h': {'score': 82, 'direction': 'long'},
-    '4h': {'score': 88, 'direction': 'long'},
-}
-```
-
-#### گام 1: محاسبه Weighted Score (از بخش 5)
-
-```python
-weighted_score = (
-    72 * 0.15 +  # 10.8
-    78 * 0.20 +  # 15.6
-    82 * 0.30 +  # 24.6
-    88 * 0.35    # 30.8
-) = 81.8
-```
-
-#### گام 2: محاسبه Alignment و Confluence
-
-```python
-alignment = 1.0  # همه long
-alignment_multiplier = 0.7 + (1.0 * 0.6) = 1.3
-
-confluence_bonus = 15  # همه > 70
-
-aligned_score = 81.8 * 1.3 + 15 = 121.34
-```
-
-#### گام 3: ML Enhancement
-
-```python
-# استخراج features
-features = extract_features(timeframe_analysis, market_data)
-
-# پیش‌بینی ML
-xgb_score = 0.82
-rf_score = 0.78
-lstm_score = 0.80
-
-ensemble = 0.82*0.5 + 0.78*0.3 + 0.80*0.2 = 0.804
-ml_confidence = 0.88
-
-ml_adjustment = 0.8 + (0.804 * 0.4) = 1.12
-```
-
-#### گام 4: اعمال Regime و Volatility
-
-```python
-regime_multiplier = 1.1  # strong_trend_normal
-volatility_score = 0.95  # normal
-
-base_final = 121.34 * 1.12 = 135.9
-regime_adjusted = 135.9 * 1.1 = 149.5
-final_score = min(149.5 * 0.95, 100) = 100
-```
-
-#### گام 5: بررسی فیلترها
-
-```python
-# فیلتر 1: حداقل امتیاز
-100 >= 33 ✅
-
-# فیلتر 2: ML Confidence
-0.88 >= 0.65 ✅
-
-# فیلتر 3: Alignment
-1.0 >= 0.6 ✅
-
-# فیلتر 4: Recent Performance
-win_rate_10 = 0.70 >= 0.3 ✅
-
-# فیلتر 5: Correlation
-correlation = 0.45 < 0.8 ✅
-
-# فیلتر 6: Drawdown
-drawdown = 0.05 < 0.15 ✅
-
-# همه فیلترها پاس شدند! ✅
-```
-
-#### گام 6: محاسبه Entry/Exit
-
-```python
-# Entry
-entry = 50000 * 0.999 = 49950
-
-# Stop Loss (ATR-based)
-atr = 800
-sl = 49950 - (800 * 2) = 48350
-
-# Take Profits (RR = 3.0)
-risk = 49950 - 48350 = 1600
-reward = 1600 * 3.0 = 4800
-
-tp1 = 49950 + 2400 = 52350  # 50% reward
-tp2 = 49950 + 3600 = 53550  # 75% reward
-tp3 = 49950 + 4800 = 54750  # 100% reward
-
-# Position Size
-risk_amount = 10000 * 0.015 = 150
-sl_distance = 1600 / 49950 = 0.032
-position_value = 150 / 0.032 = 4687.5
-position_size = 4687.5 / 49950 = 0.094 BTC
-```
-
-#### سیگنال نهایی:
-
-```
-╔═══════════════════════════════════════════════╗
-║        🎯 TRADING SIGNAL - BTC/USDT          ║
-╠═══════════════════════════════════════════════╣
-║ Direction:          LONG (BUY)                ║
-║ Signal Strength:    100/100 ⭐⭐⭐⭐⭐            ║
-║ ML Confidence:      88% 🤖                    ║
-║ Alignment:          1.0 (Perfect) ✅          ║
-╠═══════════════════════════════════════════════╣
-║ ENTRY PRICE:        49,950 USDT              ║
-║ STOP LOSS:          48,350 USDT (-3.2%)      ║
-║                                               ║
-║ TAKE PROFIT 1:      52,350 USDT (+4.8%)      ║
-║   → Exit 30% position                         ║
-║                                               ║
-║ TAKE PROFIT 2:      53,550 USDT (+7.2%)      ║
-║   → Exit 30% position                         ║
-║                                               ║
-║ TAKE PROFIT 3:      54,750 USDT (+9.6%)      ║
-║   → Exit 40% position                         ║
-╠═══════════════════════════════════════════════╣
-║ POSITION SIZE:      0.094 BTC                ║
-║ Position Value:     4,687 USDT (46.9%)       ║
-║                                               ║
-║ RISK:              150 USDT (1.5%)           ║
-║ REWARD:            450 USDT (4.5%)           ║
-║ RISK/REWARD:       1:3.0 🎯                   ║
-╠═══════════════════════════════════════════════╣
-║ TIMEFRAME SCORES:                             ║
-║   5m:  72/100  ⭐⭐⭐                           ║
-║   15m: 78/100  ⭐⭐⭐⭐                          ║
-║   1h:  82/100  ⭐⭐⭐⭐                          ║
-║   4h:  88/100  ⭐⭐⭐⭐⭐                         ║
-╠═══════════════════════════════════════════════╣
-║ SIGNAL REASONS:                               ║
-║ ✅ Strong bullish trend on 4h (ADX: 34)      ║
-║ ✅ Bullish Gartley pattern on 1h             ║
-║ ✅ MACD bullish cross on 15m                 ║
-║ ✅ Support bounce on 5m                      ║
-║ ✅ Volume spike confirmed (+80%)             ║
-║ ✅ All timeframes aligned                    ║
-║ ✅ ML models highly confident (88%)          ║
-║ ✅ Market regime: Strong Trend Normal        ║
-╠═══════════════════════════════════════════════╣
-║ RISK MANAGEMENT:                              ║
-║ • Trail stop to breakeven after TP1          ║
-║ • Consider scaling out at each TP            ║
-║ • Watch for reversal patterns                ║
-║ • Monitor volume on approach to TP levels    ║
-╠═══════════════════════════════════════════════╣
-║ Generated:          2024-01-15 14:30 UTC     ║
-║ Valid Until:        2024-01-15 18:30 UTC     ║
-╚═══════════════════════════════════════════════╝
-```
-
----
-
-### 6.9 خلاصه جریان کامل: نمودار
-
-```
-START
-  │
-  ├─► [1] دریافت داده‌های 4 تایم‌فریم (5m, 15m, 1h, 4h)
-  │
-  ├─► [2] تحلیل هر تایم‌فریم به صورت مستقل
-  │      ├─ Trend Detection
-  │      ├─ Momentum (RSI, Stochastic)
-  │      ├─ Volume Analysis
-  │      ├─ MACD
-  │      ├─ Price Action
-  │      ├─ Support/Resistance
-  │      ├─ Harmonic Patterns
-  │      ├─ Price Channels
-  │      └─ Cyclical Patterns
-  │
-  ├─► [3] محاسبه امتیاز هر تایم‌فریم (0-100)
-  │
-  ├─► [4] تشخیص Market Regime
-  │      └─ تطبیق پارامترها
-  │
-  ├─► [5] ترکیب امتیازات چند تایم‌فریمی
-  │      ├─ Weighted Score (با وزن‌های 15%, 20%, 30%, 35%)
-  │      ├─ Alignment Score
-  │      ├─ Alignment Multiplier (0.7 - 1.3×)
-  │      └─ Confluence Bonus (+0 to +15)
-  │
-  ├─► [6] ML Enhancement
-  │      ├─ Feature Extraction (100+ features)
-  │      ├─ XGBoost Prediction
-  │      ├─ Random Forest Prediction
-  │      ├─ LSTM Prediction
-  │      ├─ Ensemble Combination
-  │      └─ ML Adjustment Factor (0.8 - 1.2×)
-  │
-  ├─► [7] محاسبه Final Score
-  │      └─ (Weighted + Confluence) × ML × Regime × Volatility
-  │
-  ├─► [8] اعمال فیلترهای نهایی
-  │      ├─ Minimum Score ✓
-  │      ├─ ML Confidence ✓
-  │      ├─ Alignment ✓
-  │      ├─ Recent Performance ✓
-  │      ├─ Correlation ✓
-  │      └─ Drawdown Protection ✓
-  │
-  ├─► [9] محاسبه Entry/Exit Points
-  │      ├─ Entry Price
-  │      ├─ Stop Loss (ATR/SR/Percentage)
-  │      ├─ Take Profit 1, 2, 3
-  │      └─ Position Size
-  │
-  └─► [10] تولید سیگنال نهایی ✅
-         └─ TradingSignal Object
-```
-
----
-
-### 6.10 جدول خلاصه: تأثیر هر مؤلفه بر Final Score
-
-| مؤلفه | محدوده تأثیر | نوع | اهمیت |
-|-------|-------------|-----|-------|
-| **Score 5m** | ×0.15 | ضریب ثابت | ⭐⭐ |
-| **Score 15m** | ×0.20 | ضریب ثابت | ⭐⭐⭐ |
-| **Score 1h** | ×0.30 | ضریب ثابت | ⭐⭐⭐⭐ |
-| **Score 4h** | ×0.35 | ضریب ثابت | ⭐⭐⭐⭐⭐ |
-| **Alignment** | ×0.7 - ×1.3 | ضریب پویا | ⭐⭐⭐⭐⭐ |
-| **Confluence** | +0 - +15 | پاداش | ⭐⭐⭐⭐ |
-| **ML Ensemble** | ×0.8 - ×1.2 | ضریب پویا | ⭐⭐⭐⭐⭐ |
-| **Market Regime** | ×0.8 - ×1.2 | ضریب پویا | ⭐⭐⭐⭐ |
-| **Volatility** | ×0.7 - ×1.0 | ضریب پویا | ⭐⭐⭐⭐ |
-
-#### فرمول کامل Final Score:
-
-```python
-Final_Score = min(
-    (
-        # Base weighted score
-        (Score_5m × 0.15 + Score_15m × 0.20 + Score_1h × 0.30 + Score_4h × 0.35)
-
-        # Alignment multiplier
-        × (0.7 + Alignment × 0.6)
-
-        # Confluence bonus
-        + Confluence_Bonus
-    )
-
-    # ML adjustment
-    × (0.8 + ML_Ensemble_Score × 0.4)
-
-    # Market regime
-    × Regime_Multiplier
-
-    # Volatility
-    × Volatility_Score
-    ,
-    100  # حداکثر
+# signal_generator.py:5125-5195
+signal = SignalInfo(
+    symbol=symbol,
+    direction=direction,
+    signal_type='LONG' if direction == 'bullish' else 'SHORT',
+    score=score,  # شامل final_score و تمام ضرایب
+    
+    entry_price=current_price,
+    stop_loss=stop_loss,
+    take_profit=take_profit,
+    risk_reward_ratio=final_rr,
+    
+    regime=regime_info.get('regime'),
+    timeframe_scores=timeframe_scores,
+    pattern_names=pattern_names,
+    
+    timestamp=datetime.now(),
+    # ... و بقیه اطلاعات
 )
 ```
 
 ---
 
-### 6.11 مقایسه: با ML vs بدون ML
+### 6.5 خلاصه: جریان کامل تولید سیگنال
 
-#### سیگنال A: بدون ML
-
-```python
-Weighted Score: 75
-Alignment: 0.85
-Confluence: +10
-
-Final = (75 × 1.21 + 10) × 1.0 × 1.0 × 1.0
-      = 100.75
-      = 100 (after cap)
 ```
-
-#### سیگنال B: با ML (نظر مثبت)
-
-```python
-Weighted Score: 75
-Alignment: 0.85
-Confluence: +10
-ML Ensemble: 0.82 → Adjustment = 1.13
-
-Final = (75 × 1.21 + 10) × 1.13 × 1.0 × 1.0
-      = 113.8
-      = 100 (after cap)
-
-ولی ML Confidence بالا → اعتماد بیشتر! ✅
+[1] دریافت داده 4 timeframe (5m, 15m, 1h, 4h)
+      ↓
+[2] تحلیل هر timeframe (بخش‌های 1-3)
+      ↓
+[3] تشخیص Market Regime (بخش 4)
+      ↓
+[4] جمع‌آوری تمام سیگنال‌ها با وزن timeframe
+      ↓
+[5] محاسبه base_score (مجموع weighted signals)
+      ↓
+[6] محاسبه alignment_factor
+      ↓
+[7] محاسبه confluence_score (بر اساس RR)
+      ↓
+[8] ضرب در 13 ضریب مختلف
+      ↓
+[9] final_score = base_score × (13 multipliers)
+      ↓
+[10] بررسی فیلترها:
+      ├─ RR >= min_rr? ✓
+      ├─ final_score >= min_score? ✓
+      ├─ volatility acceptable? ✓
+      └─ correlation OK? ✓
+      ↓
+[11] محاسبه SL/TP بر اساس pattern type
+      ↓
+[12] تولید SignalInfo ✅
 ```
-
-#### سیگنال C: با ML (نظر منفی)
-
-```python
-Weighted Score: 75
-Alignment: 0.85
-Confluence: +10
-ML Ensemble: 0.35 → Adjustment = 0.94
-
-Final = (75 × 1.21 + 10) × 0.94 × 1.0 × 1.0
-      = 94.7
-
-ML Confidence: 0.55 < 0.65
-→ سیگنال رد می‌شود! ❌
-```
-
-**نتیجه:**
-ML می‌تواند سیگنال‌های ظاهراً خوب را **رد کند** اگر الگوهای پنهان ضعف را تشخیص دهد.
-
----
-
-### 6.12 نکات مهم و بهترین شیوه‌ها
-
-#### ✅ بهترین شیوه‌ها:
-
-1. **به ML اعتماد کن، ولی کورکورانه نه**
-   ```python
-   if ml_confidence > 0.85 and final_score > 80:
-       # سیگنال عالی ✅
-   elif ml_confidence > 0.65 and final_score > 70:
-       # سیگنال خوب ✅
-   else:
-       # رد کن ❌
-   ```
-
-2. **Position Size را با توجه به Confidence تنظیم کن**
-   ```python
-   base_position = 0.10  # 10% portfolio
-
-   if ml_confidence > 0.8:
-       position = base_position * 1.2  # افزایش 20%
-   elif ml_confidence < 0.7:
-       position = base_position * 0.8  # کاهش 20%
-   ```
-
-3. **از Stop Loss محافظت کن**
-   ```python
-   # هرگز Stop Loss را به امید بهتر شدن شرایط حذف نکن!
-   # اگر قیمت به SL رسید → ببند و تحلیل مجدد کن
-   ```
-
-4. **Take Profit تدریجی**
-   ```python
-   # بهتر از همه را بردن در یک نقطه
-   exit_plan = {
-       'tp1': 0.30,  # 30% at 50% target
-       'tp2': 0.30,  # 30% at 75% target
-       'tp3': 0.40,  # 40% at 100% target
-   }
-   ```
-
-#### ❌ اشتباهات رایج:
-
-1. **نادیده گرفتن ML Confidence پایین**
-   ```python
-   # ❌ اشتباه
-   if final_score > 80:
-       enter_trade()  # حتی اگر ML confidence = 0.5
-
-   # ✅ درست
-   if final_score > 80 and ml_confidence > 0.65:
-       enter_trade()
-   ```
-
-2. **افزایش بی‌رویه Position Size**
-   ```python
-   # ❌ اشتباه: همیشه 10% portfolio
-
-   # ✅ درست: تطبیق با شرایط
-   if drawdown > 10%:
-       reduce_position_size()
-   ```
-
-3. **تغییر Stop Loss بعد از ورود**
-   ```python
-   # ❌ اشتباه: جابجایی SL به امید برگشت قیمت
-
-   # ✅ درست: SL را محترم بشمار و از آن پیروی کن
-   ```
 
 ---
 
 ## نتیجه‌گیری نهایی
 
-### قدرت این سیستم در چیست؟
+### ساختار سیستم:
 
-1. **ترکیب Multi-Layer**
-   - تحلیل تکنیکال (بخش‌های 1-3)
-   - تشخیص رژیم بازار (بخش 4)
-   - ترکیب چند تایم‌فریمی (بخش 5)
-   - بهبود با ML/AI (بخش 6)
+این سیستم یک **پایپلاین چند مرحله‌ای قانون-محور** است:
 
-2. **فیلترهای چندگانه**
-   - حداقل 6 فیلتر قبل از تأیید سیگنال
-   - هر فیلتر می‌تواند سیگنال را رد کند
+1. ✅ **تحلیل تکنیکال کامل** (Trend, Momentum, MACD, Patterns, etc.)
+2. ✅ **Multi-timeframe aggregation** با وزن‌دهی
+3. ✅ **13 ضریب مختلف** در محاسبه final_score
+4. ✅ **Market regime adaptation** برای تنظیم پارامترها
+5. ✅ **فیلترهای چندگانه** برای کاهش False Positives
+6. ✅ **Risk management** با SL/TP اجباری
 
-3. **تطبیق‌پذیری**
-   - پارامترها بر اساس شرایط تغییر می‌کنند
-   - ML از تاریخچه یاد می‌گیرد
-   - مدیریت ریسک پویا
+### چیزهایی که **وجود ندارند**:
 
-4. **محافظت از سرمایه**
-   - Position Sizing هوشمند
-   - Stop Loss اجباری
-   - محدودیت همبستگی
-   - محافظت در Drawdown
+1. ❌ ML Models (XGBoost, RandomForest, LSTM)
+2. ❌ ML Confidence Score
+3. ❌ ML Adjustment Factor
+4. ❌ یادگیری از معاملات گذشته (به صورت ML)
+5. ❌ Feature extraction برای ML
 
-### آمار موفقیت (بر اساس Backtesting):
+### چیزهایی که **وجود دارند**:
 
-```
-Win Rate: 65-72%
-Average Profit: +3.8%
-Average Loss: -1.5%
-Profit Factor: 2.4
-Maximum Drawdown: 12%
-Sharpe Ratio: 1.8
-```
-
-**توصیه نهایی:**
-
-> این سیستم یک **ابزار قدرتمند** است، ولی نه یک ماشین پول‌ساز جادویی. موفقیت به:
-> - پیروی از قوانین مدیریت ریسک
-> - صبر و انضباط
-> - یادگیری مداوم
-> - عدم طمع
->
-> بستگی دارد.
+1. ✅ Adaptive Learning (یادگیری ساده بر اساس آمار)
+2. ✅ Voting-based Ensemble (در ensemble_strategy.py)
+3. ✅ Dynamic parameter adaptation
+4. ✅ Correlation management
+5. ✅ Circuit breaker برای شرایط بحرانی
 
 ---
 
-**پایان بخش 6 و مستندات کامل تحلیل سیگنال‌ها**
+**پایان بخش 6 و مستندات کامل**
 
-امیدوارم این مستند به شما کمک کند تا فرآیند تولید سیگنال را به طور کامل درک کنید! 🚀
