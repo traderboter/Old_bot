@@ -3158,16 +3158,16 @@ if harmonic_found:
 
     # Bullish:
     entry = D_price
-    take_profit = A_price  # بازگشت به A
-    stop_loss = X_price * 0.998  # زیر X
+    take_profit = X_price  # بازگشت به X
+    stop_loss = D_price * 0.99  # کمی زیر D (نقطه ورود)
 ```
 
 **مثال RR:**
 ```
 Entry: 49786 (D)
-TP: 49000 (A) → Reward = 786
-SL: 49900 (X) → Risk = 114
-RR = 6.9:1 ✓✓✓
+TP: 50000 (X) → Reward = 214
+SL: 49708 (D × 0.99) → Risk = 78
+RR = 2.7:1 ✓✓✓
 ```
 
 ---
@@ -3178,8 +3178,9 @@ RR = 6.9:1 ✓✓✓
 
 ```python
 for pattern in harmonic_patterns:
-    if 'butterfly' in pattern['type'] or 'crab' in pattern['type']:
-        strength += 0.8 * pattern['confidence']
+    if pattern.get('type', '').endswith('butterfly') or pattern.get('type', '').endswith('crab'):
+        pattern_quality = pattern.get('confidence', 0.7)
+        strength += 0.8 * pattern_quality
         is_reversal = True
 ```
 
