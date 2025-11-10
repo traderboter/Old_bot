@@ -1518,10 +1518,16 @@ analysis_data['volume'] = self.analyze_volume_trend(df, window=20)
 **گام 1: محاسبه میانگین متحرک حجم (Volume SMA)**
 
 ```python
-vol_sma = vol_series.rolling(window=20, min_periods=20).mean()
+# signal_generator.py:1667-1670
+if use_bottleneck:
+    vol_sma = bn.move_mean(vol_series.values, window=20, min_count=20)
+else:
+    vol_sma = vol_series.rolling(window=20, min_periods=20).mean().values
 ```
 
 - از میانگین متحرک ساده 20 دوره‌ای استفاده می‌شود
+- **Optimization:** اگر کتابخانه `bottleneck` نصب باشد، از `bn.move_mean()` استفاده می‌کند (سریع‌تر)
+- در غیر این صورت از `pandas.rolling().mean()` استفاده می‌شود
 - این میانگین به عنوان مبنای مقایسه برای حجم فعلی عمل می‌کند
 
 **گام 2: محاسبه نسبت حجم (Volume Ratio)**
@@ -1650,7 +1656,8 @@ for timeframe, is_confirmed in volume_confirmations.items():
     weighted_volume_factor += (1 if is_confirmed else 0) * tf_weight
     total_weight += tf_weight
 
-volume_confirmation_factor = weighted_volume_factor / total_weight
+# Safety check برای division by zero
+volume_confirmation_factor = weighted_volume_factor / total_weight if total_weight > 0 else 0.0
 ```
 
 **مثال محاسبه چندتایم‌فریمی:**
