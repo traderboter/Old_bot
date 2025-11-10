@@ -5644,6 +5644,259 @@ multiplier = 1.0 + 0.0 = 1.0  # بدون پاداش
 
 ---
 
+### 5.7 ضرایب الگویی و نوسان (Pattern & Volatility Multipliers)
+
+این بخش **5 ضریب دیگر** را که در فرمول نهایی استفاده می‌شوند توضیح می‌دهد.
+
+**محل در کد:** `signal_generator.py:5079-5093` و `5099-5112`
+
+---
+
+#### 5.7.1 pattern_quality (کیفیت الگوهای کلی)
+
+**محل:** `signal_generator.py:5081`
+
+**فرمول:**
+```python
+pattern_quality = 1.0 + min(0.5, len(pattern_names) * 0.1)
+```
+
+**توضیح:**
+این ضریب بر اساس **تعداد کل الگوهای یافت شده** در سیگنال محاسبه می‌شود. `pattern_names` شامل:
+- الگوهای کندل‌استیک (candlestick patterns)
+- شکست‌های S/R (support/resistance breakouts)
+- الگوهای قیمتی (price action patterns)
+- سایر سیگنال‌های الگو-محور
+
+**محدوده:** 1.0 تا 1.5
+
+**منطق:**
+- **بدون الگو:** pattern_quality = 1.0 (بدون تأثیر)
+- **هر الگو:** +10% (یعنی ×0.1)
+- **حداکثر 5 الگو:** +50% (محدودیت 0.5)
+
+**چرا محدودیت 0.5؟**
+جلوگیری از over-scoring زمانی که سیگنال‌های زیاد اما ضعیف وجود دارند.
+
+**مثال:**
+```python
+# حالت 1: بدون الگوی خاص
+pattern_names = []
+pattern_quality = 1.0 + min(0.5, 0 * 0.1) = 1.0
+
+# حالت 2: 2 الگو
+pattern_names = ['hammer', 'sr_breakout']
+pattern_quality = 1.0 + min(0.5, 2 * 0.1) = 1.2  # +20%
+
+# حالت 3: 7 الگو (زیاد!)
+pattern_names = ['hammer', 'sr_breakout', 'channel', 'doji', 'engulfing', 'triangle', 'flag']
+pattern_quality = 1.0 + min(0.5, 7 * 0.1) = 1.5  # محدود به +50%
+```
+
+---
+
+#### 5.7.2 volatility_score (ضریب نوسان)
+
+**محل:** `signal_generator.py:5086`
+
+**فرمول:**
+```python
+volatility_score = score_result.get('volatility_factor', 1.0)
+```
+
+**توضیح:**
+این ضریب **میانگین وزن‌دار** امتیازات نوسان از همه تایم‌فریم‌ها است.
+
+**مراحل محاسبه:**
+
+**مرحله 1: محاسبه vol_score برای هر تایم‌فریم** (توضیح کامل در بخش 3.4)
+
+هر تایم‌فریم یک `vol_score` دارد که بر اساس نسبت نوسان (volatility_ratio) تعیین می‌شود:
+
+```python
+# بر اساس bخش 3.4 - signal_generator.py:4188-4199
+if volatility_ratio > 1.8:      # extreme
+    vol_score = 0.5              # کاهش شدید 50%
+elif volatility_ratio > 1.3:    # high
+    vol_score = 0.8              # کاهش 20%
+elif volatility_ratio < 0.7:    # low
+    vol_score = 0.9              # کاهش 10%
+else:                            # normal
+    vol_score = 1.0              # بدون تغییر
+```
+
+**مرحله 2: محاسبه volatility_factor (میانگین وزن‌دار)**
+
+**محل:** `signal_generator.py:5384-5389`
+
+```python
+weighted_vol_factor = 0.0
+total_weight = 0.0
+
+for tf, vol_data in volatility_scores.items():
+    tf_weight = timeframe_weights[tf]  # 0.7, 0.85, 1.0, 1.2
+    score = vol_data.get('score', 1.0)
+    weighted_vol_factor += score * tf_weight
+    total_weight += tf_weight
+
+volatility_factor = weighted_vol_factor / total_weight
+```
+
+**مثال محاسبه:**
+```python
+# فرض: نوسان در تایم‌فریم‌های مختلف
+volatility_scores = {
+    '5m':  {'score': 1.0},   # normal
+    '15m': {'score': 0.8},   # high
+    '1h':  {'score': 0.8},   # high
+    '4h':  {'score': 1.0}    # normal
+}
+
+# محاسبه
+weighted = (1.0×0.7) + (0.8×0.85) + (0.8×1.0) + (1.0×1.2)
+         = 0.7 + 0.68 + 0.8 + 1.2
+         = 3.38
+
+total = 0.7 + 0.85 + 1.0 + 1.2 = 3.75
+
+volatility_factor = 3.38 / 3.75 = 0.90
+# نتیجه: نوسان بالای timeframe‌های میانی باعث کاهش 10% امتیاز می‌شود
+```
+
+**محدوده:** 0.5 تا 1.0 (نمی‌تواند امتیاز را افزایش دهد)
+
+---
+
+#### 5.7.3 harmonic_pattern_score (ضریب الگوهای هارمونیک)
+
+**محل:** `signal_generator.py:5087-5089`
+
+**فرمول:**
+```python
+harmonic_count = sum(1 for p in pattern_names
+                     if 'harmonic' in p or 'butterfly' in p or
+                        'crab' in p or 'gartley' in p or 'bat' in p)
+harmonic_pattern_score = 1.0 + (harmonic_count * 0.2)
+```
+
+**توضیح:**
+الگوهای هارمونیک از **قوی‌ترین الگوهای بازگشتی** هستند و **امتیاز بالاتری** نسبت به الگوهای معمولی دارند.
+
+**الگوهای شناسایی شده:**
+- Butterfly (پروانه)
+- Crab (خرچنگ)
+- Gartley (گارتلی)
+- Bat (خفاش)
+- سایر الگوهای هارمونیک
+
+**چرا 0.2 (دو برابر pattern_quality)؟**
+- الگوهای هارمونیک دقت بالاتری دارند (70-85%)
+- RR ratio بهتری ارائه می‌دهند (معمولاً 2:1 تا 5:1)
+- نقاط ورود و خروج دقیق‌تری دارند
+
+**محدوده:** 1.0 تا ~2.0 (بدون محدودیت سخت، اما معمولاً 1-2 الگو)
+
+**مثال:**
+```python
+# حالت 1: بدون الگوی هارمونیک
+pattern_names = ['hammer', 'sr_breakout']
+harmonic_count = 0
+harmonic_pattern_score = 1.0  # بدون تأثیر
+
+# حالت 2: 1 الگوی هارمونیک
+pattern_names = ['gartley_bullish', 'hammer']
+harmonic_count = 1
+harmonic_pattern_score = 1.0 + (1 * 0.2) = 1.2  # +20%
+
+# حالت 3: 2 الگوی هارمونیک (نادر!)
+pattern_names = ['butterfly_bearish', 'bat_bearish']
+harmonic_count = 2
+harmonic_pattern_score = 1.0 + (2 * 0.2) = 1.4  # +40%
+```
+
+---
+
+#### 5.7.4 price_channel_score (ضریب کانال قیمت)
+
+**محل:** `signal_generator.py:5090-5091`
+
+**فرمول:**
+```python
+channel_count = sum(1 for p in pattern_names if 'channel' in p)
+price_channel_score = 1.0 + (channel_count * 0.1)
+```
+
+**توضیح:**
+کانال‌های قیمتی (price channels) نقاط ورود و خروج قابل اعتماد ارائه می‌دهند.
+
+**انواع کانال‌ها:**
+- Ascending channel (کانال صعودی)
+- Descending channel (کانال نزولی)
+- Parallel channel (کانال موازی)
+
+**چرا 0.1؟**
+کانال‌ها الگوهای ساده‌تری نسبت به هارمونیک هستند و دقت کمتری دارند.
+
+**محدوده:** 1.0 تا ~1.2 (معمولاً 0-2 کانال)
+
+**مثال:**
+```python
+# حالت 1: کانال صعودی
+pattern_names = ['ascending_channel', 'hammer']
+channel_count = 1
+price_channel_score = 1.0 + (1 * 0.1) = 1.1  # +10%
+```
+
+---
+
+#### 5.7.5 cyclical_pattern_score (ضریب الگوهای چرخه‌ای)
+
+**محل:** `signal_generator.py:5092-5093`
+
+**فرمول:**
+```python
+cycle_count = sum(1 for p in pattern_names if 'cycle' in p)
+cyclical_pattern_score = 1.0 + (cycle_count * 0.05)
+```
+
+**توضیح:**
+الگوهای چرخه‌ای (cyclical patterns) روندهای تکرارشونده در بازار را شناسایی می‌کنند.
+
+**چرا 0.05 (کمترین ضریب)؟**
+- الگوهای چرخه‌ای **کمتر قابل اعتماد** هستند
+- تأثیر آنها **غیرمستقیم** است
+- فقط به عنوان **تأیید کمکی** استفاده می‌شوند
+
+**محدوده:** 1.0 تا ~1.15 (معمولاً 0-3 cycle)
+
+**مثال:**
+```python
+# حالت 1: 1 الگوی چرخه‌ای
+pattern_names = ['cycle_4h', 'hammer']
+cycle_count = 1
+cyclical_pattern_score = 1.0 + (1 * 0.05) = 1.05  # +5%
+```
+
+---
+
+#### 5.7.6 خلاصه و مقایسه ضرایب الگویی
+
+| ضریب | فرمول | محدوده | واحد افزایش | قدرت تأثیر |
+|------|-------|--------|-------------|-----------|
+| **pattern_quality** | 1.0 + min(0.5, count × 0.1) | 1.0-1.5 | +10% | متوسط ⭐⭐⭐ |
+| **harmonic_pattern_score** | 1.0 + (count × 0.2) | 1.0-2.0 | +20% | **قوی** ⭐⭐⭐⭐⭐ |
+| **price_channel_score** | 1.0 + (count × 0.1) | 1.0-1.2 | +10% | متوسط ⭐⭐⭐ |
+| **cyclical_pattern_score** | 1.0 + (count × 0.05) | 1.0-1.15 | +5% | ضعیف ⭐⭐ |
+| **volatility_score** | weighted average | 0.5-1.0 | متغیر | **بحرانی** ⚠️ |
+
+**نکات مهم:**
+1. ✅ الگوهای هارمونیک بالاترین تأثیر مثبت را دارند (+20% هر الگو)
+2. ⚠️ volatility تنها ضریبی است که می‌تواند امتیاز را **کاهش دهد** (تا 50-)
+3. ✅ pattern_quality محدودیت دارد (حداکثر +50%) برای جلوگیری از over-scoring
+4. ✅ الگوهای چرخه‌ای کمترین تأثیر را دارند (فقط +5%)
+
+---
+
 ### 5.7-5.10 مثال‌های محاسباتی (حذف شده)
 
 **⚠️ توجه:** بخش‌های 5.7 تا 5.10 که شامل مثال‌های محاسباتی مفصل بودند **حذف شده‌اند** چون بر اساس ساده‌سازی نادرست سیستم نوشته شده بودند.
