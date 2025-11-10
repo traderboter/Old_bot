@@ -344,8 +344,8 @@ while last_valid_idx >= -len(df) and (np.isnan(ema20[last_valid_idx]) or
 
 # محاسبه شیب (Slope) برای تشخیص جهت
 # تفاوت بین آخرین مقدار معتبر و 5 کندل قبل از آن
-ema20_slope = ema20[last_valid_idx] - ema20[last_valid_idx - 5]  # تغییرات 5 کندل اخیر
-ema50_slope = ema50[last_valid_idx] - ema50[last_valid_idx - 5]
+ema20_slope = ema20[last_valid_idx] - ema20[last_valid_idx - 5] if last_valid_idx >= 5 else 0
+ema50_slope = ema50[last_valid_idx] - ema50[last_valid_idx - 5] if last_valid_idx >= 5 else 0
 ```
 
 **انواع چیدمان EMA (EMA Arrangement):**
