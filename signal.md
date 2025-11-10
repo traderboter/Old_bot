@@ -5416,70 +5416,108 @@ alignment_factor = 0.7 + (0.425 * 0.6) = 0.955  # ضعیف ⚠️
 
 ---
 
-### 5.4 محاسبه Weighted Score (امتیاز وزن‌دار)
+### 5.4 محاسبه امتیاز نهایی (Final Score Calculation)
 
-**محل:** `signal_generator.py:5122-5180`
+**محل:** `signal_generator.py:5197-5434` (calculate_multi_timeframe_score) و `5099-5112` (final score)
 
-حالا که وزن‌ها و همراستایی را داریم، باید امتیاز نهایی را حساب کنیم:
+#### مرحله 1: محاسبه Base Score
 
-#### فرمول محاسبه:
+**محل:** `signal_generator.py:5206-5340`
 
 ```python
-def calculate_weighted_score(timeframe_signals: Dict, alignment: float) -> float:
-    """
-    امتیاز = (مجموع امتیازات × وزن‌ها) × ضریب همراستایی
-    """
+# هر تایم‌فریم امتیازاتی تولید می‌کند
+for tf, result in analysis_results.items():
+    tf_weight = self.timeframe_weights.get(tf, 1.0)  # 0.7, 0.85, 1.0, 1.2
 
-    # مرحله 1: محاسبه امتیاز وزن‌دار پایه
-    base_score = 0
-    for tf, signal in timeframe_signals.items():
-        weight = TIMEFRAME_WEIGHTS[tf]
-        score = signal['score']
-        base_score += score * weight
+    # امتیازات trend
+    trend_strength = result.get('trend', {}).get('strength', 0)
+    if trend_strength > 0:
+        bullish_score += trend_strength * tf_weight
+    else:
+        bearish_score += abs(trend_strength) * tf_weight
 
-    # مرحله 2: اعمال ضریب همراستایی
-    alignment_multiplier = 0.7 + (alignment * 0.6)  # بین 0.7 تا 1.3
+    # امتیازات momentum
+    bullish_score += result.get('momentum', {}).get('bullish_score', 0) * tf_weight
+    bearish_score += result.get('momentum', {}).get('bearish_score', 0) * tf_weight
 
-    # مرحله 3: محاسبه نهایی
-    final_score = base_score * alignment_multiplier
+    # امتیازات MACD
+    bullish_score += result.get('macd', {}).get('bullish_score', 0) * tf_weight
+    bearish_score += result.get('macd', {}).get('bearish_score', 0) * tf_weight
 
-    return final_score
+    # و همین‌طور برای price_action, patterns, channels, cycles, ...
+
+# امتیاز پایه = بالاترین امتیاز (bullish یا bearish)
+base_score = bullish_score if final_direction == 'bullish' else bearish_score
 ```
 
-#### مثال کامل محاسبه:
+#### مرحله 2: اعمال ضرایب مختلف
 
-**شرایط:**
+**محل:** `signal_generator.py:5099-5112`
+
+**نکته بسیار مهم:** Alignment_factor مستقیماً بر امتیاز ضرب **نمی‌شود**! بلکه به عنوان بخشی از `macd_analysis_score` استفاده می‌شود:
+
 ```python
-timeframe_signals = {
-    '5m':  {'direction': 'long', 'score': 68},
-    '15m': {'direction': 'long', 'score': 72},
-    '1h':  {'direction': 'long', 'score': 75},
-    '4h':  {'direction': 'long', 'score': 80}
-}
+# محاسبه macd_analysis_score (شامل alignment_factor)
+# خط 5084
+alignment_factor = 0.7 تا 1.3  # از _calculate_timeframe_alignment
+macd_analysis_score = 1.0 + ((alignment_factor - 1.0) * 0.5)
+
+# مثال:
+# alignment_factor = 1.3 → macd_analysis_score = 1.15
+# alignment_factor = 1.0 → macd_analysis_score = 1.0
+# alignment_factor = 0.7 → macd_analysis_score = 0.85
+
+# محاسبه امتیاز نهایی (خطوط 5099-5112)
+final_score = (
+    base_score *
+    timeframe_weight *
+    trend_alignment *
+    volume_confirmation *
+    pattern_quality *
+    (1.0 + confluence_score) *
+    symbol_performance_factor *
+    correlation_safety_factor *
+    macd_analysis_score *           # ← alignment_factor اینجا است!
+    structure_score *
+    volatility_score *
+    harmonic_pattern_score *
+    price_channel_score *
+    cyclical_pattern_score
+)
 ```
 
-**محاسبات:**
+#### مثال محاسبه واقعی:
+
+```python
+# فرض: همه تایم‌فریم‌ها bullish با امتیاز 50
+base_score = (50 * 0.7) + (50 * 0.85) + (50 * 1.0) + (50 * 1.2)
+base_score ≈ 187.5
+
+# ضرایب
+timeframe_weight = 1.25         # بر اساس higher TF confirmation
+trend_alignment = 1.1           # روند همسو
+volume_confirmation = 1.2       # حجم تأیید می‌کند
+pattern_quality = 1.2           # 2 pattern یافت شد
+confluence_score = 0.3          # RR خوب
+symbol_performance = 1.1        # عملکرد خوب سمبل
+correlation_safety = 1.0        # بدون همبستگی منفی
+alignment_factor = 1.3          # همراستایی کامل!
+macd_analysis_score = 1.0 + ((1.3 - 1.0) * 0.5) = 1.15
+structure_score = 1.1           # ساختار HTF خوب
+volatility_score = 1.0          # نوسان عادی
+harmonic_pattern_score = 1.2    # 1 الگوی هارمونیک
+price_channel_score = 1.0       # بدون کانال
+cyclical_pattern_score = 1.0    # بدون الگوی چرخه‌ای
+
+# محاسبه نهایی
+final_score = 187.5 * 1.25 * 1.1 * 1.2 * 1.2 * 1.3 * 1.1 * 1.0 * 1.15 * 1.1 * 1.0 * 1.2 * 1.0 * 1.0
+final_score ≈ 1089
 ```
-مرحله 1: امتیاز وزن‌دار پایه
----------------------------------
-5m:  68 × 0.15 = 10.2
-15m: 72 × 0.20 = 14.4
-1h:  75 × 0.30 = 22.5
-4h:  80 × 0.35 = 28.0
----------------------------------
-base_score = 75.1
 
-مرحله 2: محاسبه همراستایی
----------------------------------
-alignment = 1.0 (همه long)
-alignment_multiplier = 0.7 + (1.0 × 0.6) = 1.3
-
-مرحله 3: امتیاز نهایی
----------------------------------
-final_score = 75.1 × 1.3 = 97.6 ✅
-```
-
-**نتیجه:** امتیاز 97.6 → سیگنال بسیار قوی! 🚀
+**نکته کلیدی:**
+- Alignment تأثیر **کمی** دارد (فقط 50% از (alignment - 1.0))
+- Alignment فقط یکی از 13 ضریب مختلف است
+- امتیاز نهایی از ضرب base_score در همه ضرایب حاصل می‌شود
 
 ---
 
