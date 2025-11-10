@@ -335,9 +335,17 @@ ema20 = talib.EMA(close, timeperiod=20)
 ema50 = talib.EMA(close, timeperiod=50)
 ema100 = talib.EMA(close, timeperiod=100)
 
+# پیدا کردن آخرین اندیس معتبر (بدون NaN)
+last_valid_idx = -1
+while last_valid_idx >= -len(df) and (np.isnan(ema20[last_valid_idx]) or
+                                      np.isnan(ema50[last_valid_idx]) or
+                                      np.isnan(ema100[last_valid_idx])):
+    last_valid_idx -= 1
+
 # محاسبه شیب (Slope) برای تشخیص جهت
-ema20_slope = ema20[-1] - ema20[-6]  # تغییرات 5 کندل اخیر
-ema50_slope = ema50[-1] - ema50[-6]
+# تفاوت بین آخرین مقدار معتبر و 5 کندل قبل از آن
+ema20_slope = ema20[last_valid_idx] - ema20[last_valid_idx - 5]  # تغییرات 5 کندل اخیر
+ema50_slope = ema50[last_valid_idx] - ema50[last_valid_idx - 5]
 ```
 
 **انواع چیدمان EMA (EMA Arrangement):**
@@ -356,21 +364,25 @@ ema50_slope = ema50[-1] - ema50[-6]
 
 **جدول کامل Trend Detection (محل در کد: signal_generator.py:1784-1816):**
 
-| شرط | Trend | Strength | Phase |
-|-----|-------|----------|-------|
-| Close > EMA20 > EMA50 > EMA100 + شیب EMA20 و EMA50 مثبت | `bullish` | **+3** | `mature` یا `developing` |
-| Close > EMA20 > EMA50 + شیب EMA20 مثبت | `bullish` | **+2** | `developing` |
-| Close > EMA20 + شیب EMA20 مثبت | `bullish` | **+1** | `early` |
-| Close < EMA20 < EMA50 < EMA100 + شیب EMA20 و EMA50 منفی | `bearish` | **-3** | `mature` یا `developing` |
-| Close < EMA20 < EMA50 + شیب EMA20 منفی | `bearish` | **-2** | `developing` |
-| Close < EMA20 + شیب EMA20 منفی | `bearish` | **-1** | `early` |
-| Close < EMA50 + EMA20 > EMA50 + شیب EMA50 مثبت | `bullish_pullback` | **+1** | `pullback` |
-| Close > EMA50 + EMA20 < EMA50 + شیب EMA50 منفی | `bearish_pullback` | **-1** | `pullback` |
-| سایر موارد | `neutral` | **0** | `undefined` |
+**⚠️ توجه:** شرایط به ترتیب با `if-elif` بررسی می‌شوند، یعنی اولین شرط که برقرار باشد اعمال می‌شود.
+
+| شرط | Trend | Strength | Phase | خط کد |
+|-----|-------|----------|-------|-------|
+| Close > EMA20 > EMA50 > EMA100 **و** ema20_slope > 0 **و** ema50_slope > 0 | `bullish` | **+3** | `mature` اگر `ema_arrangement == 'bullish_aligned'` وگرنه `developing` | 1784-1787 |
+| Close > EMA20 > EMA50 **و** ema20_slope > 0 | `bullish` | **+2** | `developing` | 1788-1791 |
+| Close > EMA20 **و** ema20_slope > 0 | `bullish` | **+1** | `early` | 1792-1795 |
+| Close < EMA20 < EMA50 < EMA100 **و** ema20_slope < 0 **و** ema50_slope < 0 | `bearish` | **-3** | `mature` اگر `ema_arrangement == 'bearish_aligned'` وگرنه `developing` | 1796-1799 |
+| Close < EMA20 < EMA50 **و** ema20_slope < 0 | `bearish` | **-2** | `developing` | 1800-1803 |
+| Close < EMA20 **و** ema20_slope < 0 | `bearish` | **-1** | `early` | 1804-1807 |
+| Close < EMA50 **و** EMA20 > EMA50 **و** ema50_slope > 0 | `bullish_pullback` | **+1** | `pullback` | 1808-1811 |
+| Close > EMA50 **و** EMA20 < EMA50 **و** ema50_slope < 0 | `bearish_pullback` | **-1** | `pullback` | 1812-1815 |
+| هیچ‌کدام از موارد بالا | `neutral` | **0** | `undefined` | 1780-1782 |
 
 **⚠️ نکات مهم:**
 - حالت‌های `bullish_pullback` و `bearish_pullback` اصلاحات قیمت در طول روند را نشان می‌دهند
 - در حالت `mature`، اگر `ema_arrangement` برابر با `bullish_aligned` یا `bearish_aligned` نباشد، `phase` به `developing` تغییر می‌کند
+- **نکته کد واقعی:** در حالت strength=2 و strength=1، فقط `ema20_slope` چک می‌شود (نه `ema50_slope`)، در حالی که در strength=3 هر دو slope چک می‌شوند
+  - این موضوع یک نقطه ضعف است که در `Suggested_Improvment.md` (مشکل 4) بیشتر توضیح داده شده است
 
 **خروجی واقعی کد (نمونه):**
 ```python
@@ -387,12 +399,15 @@ ema50_slope = ema50[-1] - ema50[-6]
         'ema50': 49500.0,
         'ema100': 49000.0,
         'ema20_slope': 250.5,       # شیب EMA20 (مثبت = صعودی)
+                                     # ⚠️ توجه: ema50_slope محاسبه می‌شود اما در details قرار نمی‌گیرد
         'ema_arrangement': 'bullish_aligned'
     }
 }
 ```
 
-**⚠️ توجه:** در کد واقعی فیلد `confidence` وجود ندارد.
+**⚠️ توجه:**
+- در کد واقعی فیلد `confidence` وجود ندارد (این یکی از پیشنهادات بهبود در مشکل 5 است)
+- `ema50_slope` محاسبه می‌شود و در برخی شرایط (strength=3) استفاده می‌شود، اما در `details` خروجی قرار نمی‌گیرد
 
 ---
 
