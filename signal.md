@@ -1231,7 +1231,6 @@ results = {
         'rsi_condition': 'oversold',
         'macd': 0.15,
         'macd_signal': 0.10,
-        'macd_condition': 'bullish',
         'stoch_k': 18.5,
         'stoch_d': 15.2,
         'stoch_condition': 'oversold',
