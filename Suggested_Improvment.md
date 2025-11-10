@@ -1147,18 +1147,50 @@ def _detect_hidden_divergence(self, price_series: pd.Series, indicator_series: p
         logger.error(f"Error detecting hidden {indicator_name} divergence: {str(e)}", exc_info=True)
         return []
 
-# استفاده در analyze_momentum_indicators:
-def analyze_momentum_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
+# استفاده - گزینه 1: اضافه کردن پارامتر trend به analyze_momentum_indicators:
+def analyze_momentum_indicators(self, df: pd.DataFrame, trend_data: Optional[Dict] = None) -> Dict[str, Any]:
     # ... کد قبلی ...
 
     # تشخیص regular divergence
     rsi_divergences = self._detect_divergence_generic(close_s, rsi_s, 'rsi')
     momentum_signals.extend(rsi_divergences)
 
-    # تشخیص hidden divergence (جدید)
-    trend_direction = analysis_data.get('trend', {}).get('trend', 'neutral')
-    rsi_hidden_divs = self._detect_hidden_divergence(close_s, rsi_s, 'rsi', trend_direction)
-    momentum_signals.extend(rsi_hidden_divs)
+    # تشخیص hidden divergence (جدید) - فقط اگر trend data موجود باشد
+    if trend_data:
+        trend_direction = trend_data.get('trend', 'neutral')
+        rsi_hidden_divs = self._detect_hidden_divergence(close_s, rsi_s, 'rsi', trend_direction)
+        momentum_signals.extend(rsi_hidden_divs)
+
+    # ... ادامه کد ...
+
+# سپس در analyze_single_timeframe:
+# تغییر line 4693 از:
+# analysis_data['momentum'] = self.analyze_momentum_indicators(df)
+# به:
+# analysis_data['momentum'] = self.analyze_momentum_indicators(df, analysis_data.get('trend'))
+
+# استفاده - گزینه 2 (بهتر): اجرا مستقیم در analyze_single_timeframe بعد از momentum:
+async def analyze_single_timeframe(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    # ... کد قبلی تا line 4693 ...
+
+    # 2. Analyze momentum
+    analysis_data['momentum'] = self.analyze_momentum_indicators(df)
+
+    # 2b. Detect hidden divergences (با استفاده از trend data)
+    if analysis_data.get('trend'):
+        trend_direction = analysis_data['trend'].get('trend', 'neutral')
+        close_s = pd.Series(df['close'].values)
+        rsi_s = pd.Series(talib.RSI(df['close'].values, timeperiod=14))
+
+        rsi_hidden_divs = self._detect_hidden_divergence(close_s, rsi_s, 'rsi', trend_direction)
+        # اضافه کردن به momentum signals
+        analysis_data['momentum']['signals'].extend(rsi_hidden_divs)
+        # به‌روزرسانی scores
+        for sig in rsi_hidden_divs:
+            if 'bullish' in sig.get('direction', ''):
+                analysis_data['momentum']['bullish_score'] += sig['score']
+            elif 'bearish' in sig.get('direction', ''):
+                analysis_data['momentum']['bearish_score'] += sig['score']
 
     # ... ادامه کد ...
 ```
@@ -1198,13 +1230,50 @@ def analyze_momentum_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
 
 **پیشنهاد کد جدید:**
 
+**نکته مهم:** این پیشنهاد به دو تابع کمکی نیاز دارد که باید ابتدا پیاده‌سازی شوند:
+
 ```python
+# تابع کمکی 1: بررسی نزدیکی به سطوح S/R
+def _is_near_support_resistance(self, price: float, sr_levels: Dict, threshold_pct: float = 0.015) -> bool:
+    """
+    بررسی نزدیکی قیمت به سطوح support/resistance
+
+    Args:
+        price: قیمت فعلی
+        sr_levels: dict حاوی 'support' و 'resistance' lists
+        threshold_pct: درصد آستانه نزدیکی (پیش‌فرض 1.5%)
+
+    Returns:
+        True اگر قیمت نزدیک سطح S/R باشد
+    """
+    supports = sr_levels.get('support', [])
+    resistances = sr_levels.get('resistance', [])
+
+    all_levels = supports + resistances
+
+    for level in all_levels:
+        if abs(price - level) / level <= threshold_pct:
+            return True
+
+    return False
+
+# تابع کمکی 2: محاسبه confidence برای واگرایی
 def _calculate_divergence_confidence(self, div_details: Dict,
                                       timeframe: str,
-                                      at_support_resistance: bool,
-                                      volume_data: Optional[pd.Series]) -> float:
+                                      current_price: float,
+                                      sr_levels: Dict,
+                                      volume_series: Optional[pd.Series] = None,
+                                      volume_window: int = 20) -> float:
     """
     محاسبه confidence برای واگرایی
+
+    Args:
+        div_details: جزئیات divergence از _detect_divergence_generic
+        timeframe: تایم‌فریم فعلی
+        current_price: قیمت فعلی
+        sr_levels: سطوح support/resistance از detect_support_resistance
+        volume_series: سری volume (optional)
+        volume_window: ویندو محاسبه میانگین volume
 
     Returns:
         0.0-1.0: confidence score
@@ -1225,53 +1294,71 @@ def _calculate_divergence_confidence(self, div_details: Dict,
     confidence += timeframe_weights.get(timeframe, 0.18)
 
     # 3. نزدیکی به سطح S/R (20% وزن)
-    if at_support_resistance:
+    at_sr = self._is_near_support_resistance(current_price, sr_levels)
+    if at_sr:
         confidence += 0.20
 
     # 4. تأیید حجم (15% وزن)
-    if volume_data is not None:
-        # بررسی حجم در نقاط divergence
-        p1_idx = div_details['details'].get('price_p1_index')
-        p2_idx = div_details['details'].get('price_p2_index')
+    if volume_series is not None and len(volume_series) > volume_window:
+        try:
+            # استفاده از میانگین حجم در آخرین کندل‌ها
+            recent_volume = volume_series.iloc[-5:].mean()  # میانگین 5 کندل اخیر
+            avg_volume = volume_series.rolling(volume_window).mean().iloc[-1]
 
-        if p1_idx and p2_idx:
-            try:
-                vol_p1 = volume_data.loc[p1_idx]
-                vol_p2 = volume_data.loc[p2_idx]
-                avg_volume = volume_data.rolling(20).mean().iloc[-1]
-
-                # اگر حجم در p2 بیشتر از میانگین باشد
-                if vol_p2 > avg_volume * 1.5:
-                    confidence += 0.15
-                elif vol_p2 > avg_volume:
-                    confidence += 0.08
-            except:
-                pass
+            # اگر حجم اخیر بیشتر از میانگین باشد
+            if recent_volume > avg_volume * 1.5:
+                confidence += 0.15
+            elif recent_volume > avg_volume:
+                confidence += 0.08
+        except Exception as e:
+            logger.debug(f"Error calculating volume confidence: {e}")
+            pass
 
     return min(1.0, confidence)
 
-# استفاده:
-def _detect_divergence_generic(self, price_series, indicator_series, indicator_name):
-    # ... کد قبلی برای تشخیص divergence ...
+# استفاده: باید در analyze_single_timeframe بعد از momentum analysis اجرا شود
+async def analyze_single_timeframe(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    # ... کد قبلی تا line 4710 ...
 
-    # محاسبه confidence
-    timeframe = price_series.attrs.get('timeframe', '1h')
-    at_sr = self._check_near_support_resistance(price_series.iloc[-1])
-    volume = price_series.attrs.get('volume', None)
+    # 6. Detect support/resistance
+    analysis_data['support_resistance'] = self.detect_support_resistance(df)
 
-    for signal in signals:
-        confidence = self._calculate_divergence_confidence(
-            signal, timeframe, at_sr, volume
-        )
-        signal['confidence'] = confidence
+    # ... بقیه analyses ...
 
-        # اگر confidence پایین است، امتیاز را کاهش بده
-        if confidence < 0.5:
-            signal['score'] *= 0.7
-        elif confidence > 0.8:
-            signal['score'] *= 1.2
+    # بعد از تمام analyses، اضافه کردن confidence به divergence signals:
+    if analysis_data.get('momentum') and analysis_data.get('support_resistance'):
+        sr_levels = analysis_data['support_resistance'].get('details', {})
+        current_price = df['close'].iloc[-1]
+        volume_series = df.get('volume') if 'volume' in df.columns else None
 
-    return signals
+        for signal in analysis_data['momentum']['signals']:
+            # فقط برای divergence signals
+            if 'divergence' in signal.get('type', ''):
+                confidence = self._calculate_divergence_confidence(
+                    signal,
+                    timeframe,
+                    current_price,
+                    sr_levels,
+                    volume_series
+                )
+                signal['confidence'] = confidence
+
+                # تنظیم امتیاز براساس confidence
+                if confidence < 0.5:
+                    signal['score'] *= 0.7
+                elif confidence > 0.8:
+                    signal['score'] *= 1.2
+
+        # به‌روزرسانی bullish/bearish scores
+        bullish_score = sum(s['score'] for s in analysis_data['momentum']['signals']
+                          if 'bullish' in s.get('direction', s.get('type', '')))
+        bearish_score = sum(s['score'] for s in analysis_data['momentum']['signals']
+                          if 'bearish' in s.get('direction', s.get('type', '')))
+
+        analysis_data['momentum']['bullish_score'] = round(bullish_score, 2)
+        analysis_data['momentum']['bearish_score'] = round(bearish_score, 2)
+
+    # ... ادامه کد ...
 ```
 
 **مزایا:**
@@ -1470,9 +1557,36 @@ def _calculate_mtf_momentum_score(self, all_timeframes_data: Dict) -> Dict[str, 
         'mtf_momentum_multiplier': multiplier
     }
 
-# استفاده در generate_signal:
-mtf_momentum = self._calculate_mtf_momentum_score(all_timeframes_data)
-structure_score *= mtf_momentum['mtf_momentum_multiplier']
+# استفاده: باید در calculate_multi_timeframe_score اضافه شود
+# محل: signal_generator.py در تابع calculate_multi_timeframe_score
+# این تابع analysis_results از همه timeframes را دریافت می‌کند
+
+def calculate_multi_timeframe_score(self, symbol: str,
+                                     analysis_results: Dict[str, Dict],
+                                     base_signals: Dict[str, Dict],
+                                     timeframes_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """
+    محاسبه امتیاز نهایی از چند تایم‌فریم
+
+    Args:
+        analysis_results: نتایج تحلیل از analyze_single_timeframe برای هر timeframe
+                         مثال: {'1h': {'momentum': {...}, 'trend': {...}}, '4h': {...}}
+    """
+    # ... کد قبلی ...
+
+    # افزودن MTF Momentum Confirmation
+    mtf_momentum = self._calculate_mtf_momentum_score(analysis_results)
+
+    # استفاده از multiplier برای تنظیم structure_score
+    # structure_score *= mtf_momentum['mtf_momentum_multiplier']
+
+    # یا اضافه کردن به نتایج برای استفاده در جاهای دیگر:
+    score_result['mtf_momentum_alignment'] = mtf_momentum['mtf_alignment']
+    score_result['mtf_momentum_multiplier'] = mtf_momentum['mtf_momentum_multiplier']
+
+    # ... ادامه کد ...
+
+    return score_result
 ```
 
 **مثال:**
