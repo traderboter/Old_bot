@@ -5670,11 +5670,20 @@ for tf, direction in trend_directions.items():
 
 # مرحله 2: محاسبه alignment وزن‌دار
 # وزن‌ها: Trend 50%, Momentum 30%, MACD 20%
-weighted_alignment = (
-    (aligned_trend_count / total_trend_count) * 0.5 +
-    (aligned_momentum_count / total_momentum_count) * 0.3 +
-    (aligned_macd_count / total_macd_count) * 0.2
-)
+
+# ⚠️ بررسی اینکه همه اندیکاتورها داده دارند
+if total_trend_count > 0 and total_momentum_count > 0 and total_macd_count > 0:
+    # فرمول کامل وزن‌دار
+    weighted_alignment = (
+        (aligned_trend_count / total_trend_count) * 0.5 +
+        (aligned_momentum_count / total_momentum_count) * 0.3 +
+        (aligned_macd_count / total_macd_count) * 0.2
+    )
+else:
+    # Fallback: اگر یکی از اندیکاتورها داده نداشت، از فرمول ساده استفاده کن
+    total_count = total_trend_count + total_momentum_count + total_macd_count
+    aligned_count = aligned_trend_count + aligned_momentum_count + aligned_macd_count
+    weighted_alignment = aligned_count / total_count if total_count > 0 else 0.0
 
 # مرحله 3: تبدیل به ضریب بین 0.7 تا 1.3
 alignment_factor = 0.7 + (weighted_alignment * 0.6)
@@ -5730,11 +5739,42 @@ weighted_alignment = (0.5 * 0.5) + (0.25 * 0.3) + (0.5 * 0.2) = 0.425
 alignment_factor = 0.7 + (0.425 * 0.6) = 0.955  # ضعیف ⚠️
 ```
 
+**حالت 3: Fallback - داده ناقص 🔧**
+```python
+final_direction = 'bullish'
+
+# فرض کنید MACD در هیچ تایم‌فریمی محاسبه نشده (مشکل داده)
+trend_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bullish', '4h': 'bullish'
+}
+momentum_directions = {
+    '5m': 'bullish', '15m': 'bullish', '1h': 'bullish', '4h': 'bearish'
+}
+macd_directions = {}  # خالی! ❌
+
+# محاسبه
+total_trend_count = 4
+aligned_trend_count = 4
+total_momentum_count = 4
+aligned_momentum_count = 3
+total_macd_count = 0  # ❌ صفر است!
+
+# چون total_macd_count = 0، شرط if برقرار نیست
+# → استفاده از فرمول Fallback ساده:
+total_count = 4 + 4 + 0 = 8
+aligned_count = 4 + 3 + 0 = 7
+weighted_alignment = 7 / 8 = 0.875
+
+alignment_factor = 0.7 + (0.875 * 0.6) = 1.225  # خوب ✅
+```
+
 **نکات مهم:**
 - ❌ Timeframe weights در این محاسبه استفاده **نمی‌شود**!
 - ✅ فقط **تعداد indicators همسو** شمارش می‌شود
 - ✅ Trend مهم‌ترین وزن را دارد (50%)
 - ✅ خروجی همیشه بین 0.7 تا 1.3 است
+- 🔧 **Fallback mechanism:** اگر یکی از اندیکاتورها (Trend/Momentum/MACD) داده نداشته باشد، از فرمول ساده بدون وزن استفاده می‌شود
+- 🔧 **چرا Fallback؟** برای جلوگیری از خطای تقسیم بر صفر و اطمینان از اینکه سیستم حتی با داده ناقص هم کار کند
 
 ---
 
