@@ -7546,6 +7546,8 @@ else:
 
 #### 6 روش تشخیص برگشت:
 
+⚠️ **نکته مهم:** اگر **هر یک** از شرایط زیر برقرار باشد، `is_reversal = True` می‌شود (نه حداقل 2 سیگنال!)
+
 ```python
 # signal_generator.py:3693-3777
 def detect_reversal_conditions(self, analysis_results, timeframe) -> Tuple[bool, float]:
@@ -7558,73 +7560,104 @@ def detect_reversal_conditions(self, analysis_results, timeframe) -> Tuple[bool,
         - strength: قدرت برگشت (0.0 تا 1.0)
     """
 
-    reversal_signals = []
+    is_reversal = False
     strength = 0.0
 
-    # 1️⃣ RSI Divergence
-    if self._check_rsi_divergence(result):
-        reversal_signals.append('rsi_divergence')
-        strength += 0.7  # قوی‌ترین سیگنال
+    # 1️⃣ RSI Divergence (قوی‌ترین سیگنال)
+    # signal_generator.py:3712-3719
+    div_signals = momentum_data.get('signals', [])
+    if any('rsi_bullish_divergence' == s.get('type') for s in div_signals):
+        strength += 0.7
+        is_reversal = True  # ← مستقیماً True می‌شود
+    if any('rsi_bearish_divergence' == s.get('type') for s in div_signals):
+        strength += 0.7
+        is_reversal = True
 
     # 2️⃣ Oversold/Overbought برخلاف ترند
-    rsi = result.get('rsi', 50)
-    trend_direction = result.get('trend_direction', 'neutral')
+    # signal_generator.py:3721-3726
+    rsi_cond = momentum_data.get('details', {}).get('rsi_condition', 'neutral')
+    trend = trend_data.get('trend', 'neutral')
 
-    if trend_direction == 'bullish' and rsi > 75:
-        # ترند صعودی + اشباع خرید = احتمال برگشت
-        reversal_signals.append('overbought_in_uptrend')
+    if (rsi_cond == 'oversold' and 'bearish' in trend) or \
+       (rsi_cond == 'overbought' and 'bullish' in trend):
         strength += 0.5
-    elif trend_direction == 'bearish' and rsi < 25:
-        # ترند نزولی + اشباع فروش = احتمال برگشت
-        reversal_signals.append('oversold_in_downtrend')
-        strength += 0.5
+        is_reversal = True
 
     # 3️⃣ Reversal Candlestick Patterns
-    patterns = result.get('patterns', {})
+    # signal_generator.py:3728-3736
     reversal_patterns = [
+        'hammer', 'inverted_hammer',
         'morning_star', 'evening_star',
         'bullish_engulfing', 'bearish_engulfing',
-        'hammer', 'shooting_star',
-        'doji_star'
+        'dragonfly_doji', 'gravestone_doji'
     ]
 
-    for pattern_name in reversal_patterns:
-        if pattern_name in patterns:
-            reversal_signals.append(f'pattern_{pattern_name}')
-            strength += 0.4
+    pa_signals = pa_data.get('signals', [])
+    pattern_strength = sum(
+        s.get('score', 0) / 3.0 for s in pa_signals
+        if any(p in s.get('type', '') for p in reversal_patterns)
+    )
+
+    if pattern_strength > 0:
+        strength += pattern_strength  # متغیر است (نه 0.4 ثابت!)
+        is_reversal = True
 
     # 4️⃣ Harmonic Pattern Reversals
-    harmonic = result.get('harmonic_patterns', {})
-    reversal_harmonics = ['butterfly', 'crab']  # معمولاً نشان‌دهنده برگشت
-
-    for pattern_name in reversal_harmonics:
-        if pattern_name in harmonic:
-            reversal_signals.append(f'harmonic_{pattern_name}')
-            strength += 0.3
+    # signal_generator.py:3738-3743
+    for pattern in harmonic_patterns:
+        if pattern.get('type', '').endswith('butterfly') or \
+           pattern.get('type', '').endswith('crab'):
+            pattern_quality = pattern.get('confidence', 0.7)
+            strength += 0.8 * pattern_quality  # 0.8 نه 0.3!
+            is_reversal = True
 
     # 5️⃣ Channel Bounce Signals
-    channel_signals = result.get('price_channel_signals', [])
-    if 'upper_bound_test' in channel_signals or 'lower_bound_test' in channel_signals:
-        reversal_signals.append('channel_bounce')
-        strength += 0.3
+    # signal_generator.py:3745-3751
+    channel_signal = channel_data.get('signal', {})
+    if channel_signal:
+        signal_type = channel_signal.get('type', '')
+        if signal_type == 'channel_bounce':
+            signal_score = channel_signal.get('score', 0) / 3.0
+            strength += signal_score  # متغیر است (نه 0.3 ثابت!)
+            is_reversal = True
 
     # 6️⃣ Support/Resistance Fakeout
-    sr = result.get('support_resistance', {})
-    if sr.get('fakeout_detected', False):
-        reversal_signals.append('sr_fakeout')
-        strength += 0.4
+    # signal_generator.py:3753-3771
+    # اگر قیمت فعلی نزدیک به سطح شکسته شده باشد (< 1%)
+    current_close = result.get('price_action', {}).get('details', {}).get('close')
 
-    # تعیین نتیجه نهایی
-    is_reversal = len(reversal_signals) >= 2  # حداقل 2 سیگنال برگشت
-    strength = min(1.0, strength)  # محدود به 1.0
+    if current_close and nearest_resist and broken_resist:
+        if abs(current_close - broken_resist) / broken_resist < 0.01:
+            strength += 0.6  # 0.6 نه 0.4!
+            is_reversal = True
 
-    if is_reversal:
-        logger.debug(
-            f"Reversal detected on {timeframe}: "
-            f"Signals: {reversal_signals}, Strength: {strength:.2f}"
-        )
+    if current_close and nearest_support and broken_support:
+        if abs(current_close - broken_support) / broken_support < 0.01:
+            strength += 0.6
+            is_reversal = True
+
+    # محدود کردن strength به 1.0
+    strength = min(1.0, strength)
 
     return is_reversal, strength
+```
+
+**مثال:**
+
+```python
+# سناریو 1: فقط RSI Divergence
+div_signals = [{'type': 'rsi_bullish_divergence'}]
+# نتیجه: is_reversal = True, strength = 0.7
+
+# سناریو 2: Butterfly pattern با confidence 0.8
+harmonic_patterns = [{'type': 'bullish_butterfly', 'confidence': 0.8}]
+# نتیجه: is_reversal = True, strength = 0.8 * 0.8 = 0.64
+
+# سناریو 3: Overbought + Morning Star (score=2.4)
+rsi_cond = 'overbought'
+trend = 'bullish'
+pa_signals = [{'type': 'morning_star', 'score': 2.4}]
+# نتیجه: is_reversal = True, strength = 0.5 + (2.4/3.0) = 0.5 + 0.8 = 1.3 → min(1.0, 1.3) = 1.0
 ```
 
 #### تأثیر بر امتیاز نهایی:
