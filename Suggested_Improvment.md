@@ -6445,6 +6445,355 @@ if incomplete_patterns:
 
 ---
 
+### 📊 نتایج Backtest و ارزیابی عملکرد
+
+برای اعتبارسنجی تأثیرات واقعی هر بهبود، **ضروری است** که قبل و بعد از هر تغییر، backtest جامع انجام شود.
+
+#### 🎯 متریک‌های کلیدی اندازه‌گیری
+
+**1. Detection Metrics (متریک‌های شناسایی):**
+```python
+# الگوهای شناسایی‌شده
+Total_Patterns_Detected = تعداد کل الگوهای شناسایی‌شده
+Valid_Patterns = الگوهایی که confidence >= 0.7
+Detection_Rate = (Valid_Patterns / Expected_Patterns) × 100%
+
+# مثال:
+# قبل از بهبود (Tolerance ثابت 3%):
+# - 100 الگوی مورد انتظار
+# - 65 الگو شناسایی شد → Detection Rate = 65%
+#
+# بعد از بهبود (Adaptive Tolerance):
+# - 100 الگوی مورد انتظار
+# - 80 الگو شناسایی شد → Detection Rate = 80% (+15%)
+```
+
+**2. Accuracy Metrics (متریک‌های دقت):**
+```python
+# نتایج سیگنال‌ها
+Win_Rate = (Winning_Trades / Total_Trades) × 100%
+Average_RR = sum(Actual_RR) / Total_Trades
+Profit_Factor = Gross_Profit / Gross_Loss
+
+# الگوهای اشتباه
+False_Positive_Rate = (False_Signals / Total_Signals) × 100%
+```
+
+**3. Entry Timing Metrics (متریک‌های زمان‌بندی ورود):**
+```python
+# دقت PRZ
+Entry_Slippage = |Actual_Entry - Predicted_Entry| / Predicted_Entry
+PRZ_Hit_Rate = (Entries_Within_PRZ / Total_Entries) × 100%
+
+# مثال PRZ Analysis:
+# قبل: ورود در نقطه D دقیق
+#   - Average Slippage: 0.8%
+#   - Early Entries: 35%
+#
+# بعد: ورود در PRZ Zone
+#   - Average Slippage: 0.3% (-62%)
+#   - Early Entries: 12% (-23%)
+```
+
+**4. Pattern-Specific Metrics:**
+```python
+# عملکرد هر الگو
+for pattern in ['Gartley', 'Bat', 'Butterfly', 'Crab']:
+    pattern_metrics = {
+        'count': تعداد شناسایی,
+        'win_rate': درصد موفقیت,
+        'avg_rr': میانگین Risk/Reward,
+        'avg_confidence': میانگین Confidence,
+        'false_positive_rate': نرخ سیگنال اشتباه
+    }
+```
+
+---
+
+#### 🧪 نحوه اجرای Backtest
+
+**مرحله 1: تنظیمات اولیه**
+```python
+# پارامترهای backtest
+BACKTEST_CONFIG = {
+    'symbols': ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],  # چند جفت ارز
+    'timeframes': ['5m', '15m', '1h', '4h'],
+    'period': '2023-01-01 to 2024-12-31',  # 2 سال دیتا
+    'min_trades': 50,  # حداقل تعداد معاملات برای validation
+
+    'baseline': {  # کد فعلی (بدون بهبود)
+        'tolerance': 0.03,
+        'prz_analysis': False,
+        'confluence_check': False
+    },
+
+    'improved': {  # کد بهبود یافته
+        'adaptive_tolerance': True,
+        'prz_analysis': True,
+        'confluence_check': True
+    }
+}
+```
+
+**مرحله 2: اجرای Backtest**
+```python
+def run_harmonic_backtest(config: Dict) -> Dict:
+    """اجرای backtest کامل برای الگوهای هارمونیک"""
+
+    results = {
+        'baseline': {},  # نتایج کد فعلی
+        'improved': {}   # نتایج کد بهبود یافته
+    }
+
+    for mode in ['baseline', 'improved']:
+        all_trades = []
+        all_patterns = []
+
+        for symbol in config['symbols']:
+            for timeframe in config['timeframes']:
+                # بارگذاری دیتای تاریخی
+                df = load_historical_data(symbol, timeframe, config['period'])
+
+                # شناسایی الگوها
+                if mode == 'baseline':
+                    patterns = detect_harmonic_patterns(df, tolerance=0.03)
+                else:
+                    patterns = detect_harmonic_patterns_improved(df)
+
+                all_patterns.extend(patterns)
+
+                # شبیه‌سازی معاملات
+                for pattern in patterns:
+                    trade = simulate_trade(df, pattern)
+                    all_trades.append(trade)
+
+        # محاسبه متریک‌ها
+        results[mode] = calculate_metrics(all_trades, all_patterns)
+
+    # مقایسه
+    comparison = compare_results(results['baseline'], results['improved'])
+
+    return {
+        'baseline': results['baseline'],
+        'improved': results['improved'],
+        'comparison': comparison
+    }
+```
+
+**مرحله 3: شبیه‌سازی معامله**
+```python
+def simulate_trade(df: pd.DataFrame, pattern: Dict) -> Dict:
+    """شبیه‌سازی یک معامله بر اساس الگوی هارمونیک"""
+
+    entry_index = pattern['points']['D']['index']
+    entry_price = pattern['points']['D']['price']
+
+    # محاسبه SL/TP
+    if pattern['direction'] == 'bullish':
+        stop_loss = entry_price * 0.99
+        take_profit = pattern['points']['X']['price']
+    else:
+        stop_loss = entry_price * 1.01
+        take_profit = pattern['points']['X']['price']
+
+    # بررسی نتیجه معامله
+    future_data = df.iloc[entry_index+1:entry_index+100]  # 100 کندل آینده
+
+    result = 'pending'
+    exit_price = None
+    exit_index = None
+
+    for i, row in future_data.iterrows():
+        if pattern['direction'] == 'bullish':
+            if row['low'] <= stop_loss:
+                result = 'loss'
+                exit_price = stop_loss
+                exit_index = i
+                break
+            elif row['high'] >= take_profit:
+                result = 'win'
+                exit_price = take_profit
+                exit_index = i
+                break
+        else:
+            if row['high'] >= stop_loss:
+                result = 'loss'
+                exit_price = stop_loss
+                exit_index = i
+                break
+            elif row['low'] <= take_profit:
+                result = 'win'
+                exit_price = take_profit
+                exit_index = i
+                break
+
+    # محاسبه RR و سود/زیان
+    risk = abs(entry_price - stop_loss)
+    reward = abs(take_profit - entry_price)
+    planned_rr = reward / risk if risk > 0 else 0
+
+    if result == 'win':
+        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        actual_rr = planned_rr
+    elif result == 'loss':
+        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        actual_rr = -1
+    else:
+        pnl_pct = 0
+        actual_rr = 0
+
+    return {
+        'pattern_type': pattern['type'],
+        'entry_price': entry_price,
+        'exit_price': exit_price,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'result': result,
+        'pnl_pct': pnl_pct,
+        'planned_rr': planned_rr,
+        'actual_rr': actual_rr,
+        'confidence': pattern['confidence'],
+        'entry_index': entry_index,
+        'exit_index': exit_index
+    }
+```
+
+---
+
+#### 📋 Template گزارش نتایج
+
+**فرمت استاندارد گزارش:**
+
+```markdown
+### 📊 Backtest Report: [نام بهبود]
+
+**تاریخ اجرا:** 2024-XX-XX
+**دوره تست:** 2023-01-01 to 2024-12-31 (2 سال)
+**سمبل‌ها:** BTCUSDT, ETHUSDT, BNBUSDT
+**تایم‌فریم‌ها:** 5m, 15m, 1h, 4h
+
+---
+
+#### 1️⃣ Detection Performance
+
+| متریک | Baseline | Improved | تغییر |
+|-------|----------|----------|-------|
+| Total Patterns | 850 | 978 | **+15.1%** ✅ |
+| Valid Patterns (conf≥0.7) | 612 | 756 | **+23.5%** ✅ |
+| Detection Rate | 65.4% | 79.8% | **+14.4%** ✅ |
+| Avg Confidence | 0.78 | 0.82 | **+5.1%** ✅ |
+
+---
+
+#### 2️⃣ Trading Performance
+
+| متریک | Baseline | Improved | تغییر |
+|-------|----------|----------|-------|
+| Total Trades | 612 | 756 | +144 |
+| Winning Trades | 398 | 529 | +131 |
+| **Win Rate** | **65.0%** | **70.0%** | **+5.0%** ✅ |
+| Average RR | 2.1 | 2.4 | **+14.3%** ✅ |
+| **Profit Factor** | **1.85** | **2.23** | **+20.5%** ✅ |
+
+---
+
+#### 3️⃣ Pattern-Specific Results
+
+| الگو | Baseline Win Rate | Improved Win Rate | تغییر |
+|------|------------------|-------------------|-------|
+| Gartley | 62.5% | 68.2% | **+5.7%** ✅ |
+| Bat | 64.8% | 71.5% | **+6.7%** ✅ |
+| Butterfly | 68.3% | 74.1% | **+5.8%** ✅ |
+| Crab | 71.2% | 78.9% | **+7.7%** ✅ |
+
+---
+
+#### 4️⃣ False Positive Analysis
+
+| متریک | Baseline | Improved | تغییر |
+|-------|----------|----------|-------|
+| False Signals | 214 | 227 | +13 |
+| **False Positive Rate** | **35.0%** | **30.0%** | **-5.0%** ✅ |
+| Filtered by Confluence | 0 | 89 | +89 |
+
+---
+
+#### 5️⃣ Entry Timing (PRZ Analysis)
+
+| متریک | Baseline | Improved | تغییر |
+|-------|----------|----------|-------|
+| Average Slippage | 0.82% | 0.31% | **-62.2%** ✅ |
+| Early Entries | 35.2% | 12.1% | **-23.1%** ✅ |
+| PRZ Hit Rate | N/A | 87.5% | **NEW** ✅ |
+
+---
+
+#### 📈 نتیجه‌گیری
+
+✅ **بهبود تأیید شد!**
+
+- Detection Rate: **+14.4%** (از 65.4% به 79.8%)
+- Win Rate: **+5.0%** (از 65% به 70%)
+- Profit Factor: **+20.5%** (از 1.85 به 2.23)
+- False Positives: **-5.0%** (بهبود)
+- Entry Timing: **-62% slippage** (بهبود قابل توجه)
+
+**توصیه:** بهبود برای production آماده است ✅
+
+---
+
+#### ⚠️ نکات مهم
+
+1. **تعداد معاملات افزایش یافت** (+144 trades) که نشان‌دهنده Detection Rate بالاتر است
+2. **Profit Factor بالای 2.0** = سیستم سودآور
+3. **PRZ Analysis** تأثیر بسیار مثبت بر entry timing داشت
+4. **Confluence Validation** 89 سیگنال اشتباه را فیلتر کرد
+```
+
+---
+
+#### 🎯 کاربرد نتایج
+
+**1. مقایسه قبل/بعد:**
+- هر بهبود را جداگانه test کنید
+- ابتدا Baseline را اجرا کنید
+- سپس یک بهبود را اضافه و دوباره test کنید
+- نتایج را مقایسه و ثبت کنید
+
+**2. A/B Testing:**
+- اگر چند بهبود پیشنهادی دارید، آنها را جداگانه test کنید
+- بهترین ترکیب را پیدا کنید
+- بهبودهای با بیشترین impact را اولویت‌بندی کنید
+
+**3. مستندسازی:**
+- همه نتایج را در این فایل ثبت کنید
+- گزارش‌ها را با تاریخ نگه دارید
+- تصمیمات را بر اساس داده بگیرید
+
+**4. بهینه‌سازی پارامترها:**
+```python
+# مثال: بهینه‌سازی Adaptive Tolerance
+tolerance_results = {}
+
+for base in [0.02, 0.025, 0.03, 0.035, 0.04]:
+    for tf_mult_1m in [0.5, 0.6, 0.7]:
+        for vol_mult_high in [1.2, 1.3, 1.4]:
+            config = {
+                'base_tolerance': base,
+                'tf_multipliers': {'1m': tf_mult_1m, ...},
+                'volatility_mult_high': vol_mult_high
+            }
+
+            result = run_backtest(config)
+            tolerance_results[config] = result
+
+# پیدا کردن بهترین ترکیب
+best_config = max(tolerance_results,
+                  key=lambda c: tolerance_results[c]['profit_factor'])
+```
+
+---
+
 ### 🔬 پیشنهادات تست و اعتبارسنجی
 
 1. **Tolerance Optimization:**
