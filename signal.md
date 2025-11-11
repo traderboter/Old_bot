@@ -7046,20 +7046,95 @@ if final_rr < min_rr:
 
 #### 3. فیلتر حداقل امتیاز
 
-**محل:** `signal_generator.py:5116-5125`
+**محل:** `signal_generator.py:5115-5122`
 
 ```python
 min_score = adapted_signal_config.get('minimum_signal_score', self.base_minimum_signal_score)
 
 if score.final_score < min_score:
-    # سیگنال رد می‌شود
+    return None  # 🚫 سیگنال رد می‌شود!
 ```
 
-حداقل امتیاز بر اساس **regime** تطبیق می‌یابد:
-- `strong_trend_normal`: حداقل 33
-- `strong_trend_high`: حداقل 36 (سخت‌تر)
-- `weak_trend_normal`: حداقل 35
-- `range` modes: حداقل 38-42 (سخت‌ترین)
+##### نحوه محاسبه حداقل امتیاز:
+
+حداقل امتیاز بر اساس **trend_strength** و **volatility** تطبیق می‌یابد، نه بر اساس regime:
+
+```python
+# signal_generator.py:481-487
+base_min_score = base_signal.get('minimum_signal_score', 33)
+score_modifier = 1.0
+
+if trend_strength == 'no_trend' or volatility == 'high':
+    score_modifier = 1.1  # 10% سخت‌تر
+
+signal_params['minimum_signal_score'] = base_min_score * (1.0 + (score_modifier - 1.0) * confidence)
+```
+
+##### مقادیر واقعی (با فرض confidence = 1.0):
+
+**شرایط آسان‌تر (score_modifier = 1.0):**
+- `trend_strength = 'strong'` + `volatility = 'normal' or 'low'` → **حداقل 33**
+- `trend_strength = 'weak'` + `volatility = 'normal' or 'low'` → **حداقل 33**
+
+**شرایط سخت‌تر (score_modifier = 1.1):**
+- `trend_strength = 'no_trend'` (بدون توجه به volatility) → **حداقل 36.3**
+- `volatility = 'high'` (بدون توجه به trend_strength) → **حداقل 36.3**
+
+##### تطبیق با Regime:
+
+| Regime | Trend Strength | Volatility | حداقل امتیاز |
+|--------|---------------|-----------|-------------|
+| STRONG_TREND | strong | normal | **33** |
+| STRONG_TREND_HIGH_VOLATILITY | strong | high | **36.3** |
+| WEAK_TREND | weak | normal | **33** |
+| WEAK_TREND_HIGH_VOLATILITY | weak | high | **36.3** |
+| RANGE | no_trend | normal | **36.3** |
+| RANGE_HIGH_VOLATILITY | no_trend | high | **36.3** |
+| TIGHT_RANGE | no_trend | low | **36.3** |
+| CHOPPY | (variable) | (variable) | **33-36.3** |
+| BREAKOUT | (variable) | (variable) | **33-36.3** |
+
+##### نکته مهم - تأثیر Confidence:
+
+مقدار `confidence` (اطمینان از تشخیص regime) نقش کلیدی دارد:
+
+```python
+# با confidence = 0.5:
+minimum_signal_score = 33 * (1.0 + (1.1 - 1.0) * 0.5) = 33 * 1.05 = 34.65
+
+# با confidence = 1.0:
+minimum_signal_score = 33 * (1.0 + (1.1 - 1.0) * 1.0) = 33 * 1.1 = 36.3
+```
+
+**مثال:**
+
+```python
+# STRONG_TREND با volatility = normal:
+trend_strength = 'strong'
+volatility = 'normal'
+confidence = 0.8
+
+score_modifier = 1.0  # شرط (no_trend or high) برقرار نیست
+minimum_signal_score = 33 * (1.0 + (1.0 - 1.0) * 0.8) = 33
+
+# RANGE با volatility = normal:
+trend_strength = 'no_trend'
+volatility = 'normal'
+confidence = 0.8
+
+score_modifier = 1.1  # شرط (no_trend) برقرار است
+minimum_signal_score = 33 * (1.0 + (1.1 - 1.0) * 0.8)
+                     = 33 * (1.0 + 0.1 * 0.8)
+                     = 33 * 1.08
+                     = 35.64
+```
+
+##### چرا این فیلتر مهم است؟
+
+1. ✅ **Quality Control** - فقط سیگنال‌های قوی تأیید می‌شوند
+2. ✅ **Regime Adaptation** - در شرایط سخت (range, high volatility) سخت‌گیرانه‌تر است
+3. ✅ **Risk Management** - جلوگیری از ورود با سیگنال‌های ضعیف
+4. ✅ **Win Rate Optimization** - افزایش نرخ موفقیت با انتخاب سیگنال‌های بهتر
 
 ---
 
