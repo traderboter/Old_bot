@@ -4875,30 +4875,41 @@ confidence = 0.4 × 0.5 + 0.3 = 0.5  # اطمینان متوسط ⚠️
 
 ### 4.3 خروجی کامل تشخیص رژیم
 
-**محل در کد:** `signal_generator.py:258-372` (تابع detect_regime)
+**محل در کد:** `market_regime_detector.py:593-646` (متد detect_regime از کلاس MarketRegimeDetector)
 
 ```python
-# نمونه خروجی واقعی - signal_generator.py:356-363
+# نمونه خروجی واقعی - market_regime_detector.py:570-576
 {
-    'regime': 'strong_trend_high',            # نوع رژیم (ترکیب قدرت + نوسان)
-    'trend_strength': 'strong',               # قدرت روند: strong/weak/no_trend
-    'trend_direction': 'bullish',             # جهت روند: bullish/bearish
-    'volatility': 'high',                     # سطح نوسان: high/normal/low
-    'confidence': 0.85,                       # اطمینان از تشخیص (0.1-1.0)
+    'regime': 'strong_trend_high_volatility',  # نوع رژیم کامل
+    'trend_strength': 'strong',                # قدرت روند: strong/weak/no_trend
+    'trend_direction': 'bullish',              # جهت روند: bullish/bearish/neutral
+    'volatility': 'high',                      # سطح نوسان: high/normal/low
+    'confidence': 0.85,                        # اطمینان از تشخیص (0.0-1.0)
     'details': {
-        'adx': 28.5,                          # مقدار ADX
-        'plus_di': 32.0,                      # +DI
-        'minus_di': 18.0,                     # -DI
-        'atr_percent': 1.2                    # نوسان به درصد (ATR%)
+        # فیلدهای اصلی (همیشه موجود):
+        'adx': 28.5,                           # مقدار ADX
+        'plus_di': 32.0,                       # +DI
+        'minus_di': 18.0,                      # -DI
+        'atr_percent': 1.2,                    # نوسان به درصد (ATR%)
+        'adx_stability': 0.82,                 # ثبات ADX (0.0-1.0)
+        'bollinger_width': 3.5,                # عرض باند بولینگر (%)
+        'rsi': 62.5,                           # RSI
+        'volume_change': 15.3,                 # تغییر حجم (%)
+
+        # فیلدهای اختیاری (اگر موجود باشند):
+        'volume_ratio': 1.8,                   # نسبت حجم به میانگین
+        'volume_price_correlation': 0.75,      # همبستگی حجم و قیمت
+        'price_stability': 0.88,               # شاخص ثبات قیمت
+        'trend_ratio': 1.05                    # نسبت SMA5/SMA20
     }
 }
 ```
 
 **نکات مهم:**
-- **رژیم**: به صورت `{trend_strength}_{volatility}` ساخته می‌شود (signal_generator.py:322-327)
-  - مثال: `strong_trend_high`, `weak_trend_normal`, `range_low`
-- **Confidence**: بر اساس فاصله ADX از آستانه‌ها محاسبه می‌شود (signal_generator.py:330-332)
-- **Details**: فقط شامل 4 فیلد اصلی است - فیلدهای اضافی مانند `adx_stability`, `bollinger_width`, `rsi` و غیره وجود ندارند
+- **رژیم**: نام کامل از enum استفاده می‌کند (market_regime_detector.py:485-507)
+  - مثال: `strong_trend_high_volatility`, `weak_trend`, `range`, `breakout`, `choppy`
+- **Confidence**: بر اساس ثبات ADX + همبستگی حجم/قیمت + breakout alignment محاسبه می‌شود (market_regime_detector.py:509-544)
+- **Details**: شامل **حداقل ۸ فیلد** و تا ۱۲ فیلد (بسته به تنظیمات volume analysis) است
 
 ---
 
