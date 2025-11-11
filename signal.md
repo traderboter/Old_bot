@@ -1888,9 +1888,39 @@ analysis_data['macd'] = self._analyze_macd(df)
 - **مرحله 2 (Momentum Indicators):** تحلیل ساده MACD (crossover و zero-cross)
 - **مرحله 4 (تحلیل پیشرفته):** تحلیل عمیق شامل market type، histogram patterns، trendline breaks، و divergence
 
+**⚠️ نکته امتیازات:** همه امتیازات سیگنال‌های MACD پیشرفته از `self.pattern_scores` می‌آیند (signal_generator.py:1471). مقادیر پیش‌فرض:
+
+```python
+# مقادیر پیش‌فرض pattern_scores (برای MACD پیشرفته):
+# - macd_gold_cross_below_zero: 2.5
+# - macd_gold_cross_above_zero: 2.5
+# - macd_death_cross_above_zero: 2.5
+# - macd_death_cross_below_zero: 2.5
+# - dif_cross_zero_up_first: 2.0
+# - dif_cross_zero_up_second: 2.0
+# - dif_cross_zero_down_first: 2.0
+# - dif_cross_zero_down_second: 2.0
+# - dif_trendline_break_up: 3.0
+# - dif_trendline_break_down: 3.0
+# - macd_hist_shrink_head: 1.5
+# - macd_hist_pull_feet: 1.5
+# - macd_hist_top_divergence: 3.8
+# - macd_hist_bottom_divergence: 3.8
+# - macd_hist_kill_long_bin: 2.0
+```
+
 ---
 
 ##### 📊 اجزای تحلیل پیشرفته MACD
+
+**پارامترهای تحلیل:**
+
+```python
+# محل در کد: signal_generator.py:1486-1488
+self.macd_trendline_period = 80   # دوره بررسی برای شکست خط روند
+self.macd_cross_period = 20       # دوره بررسی برای تقاطع‌ها
+self.macd_hist_period = 60        # دوره بررسی برای تحلیل هیستوگرام
+```
 
 تابع `_analyze_macd` پنج تحلیل مستقل انجام می‌دهد:
 
