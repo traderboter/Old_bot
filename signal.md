@@ -1614,7 +1614,13 @@ Volume Ratio = حجم فعلی / میانگین متحرک 20 دوره‌ای ح
 
 **گام 3: طبقه‌بندی الگوی حجمی**
 
-بر اساس **آستانه پایه (Base Threshold)**: `volume_multiplier_threshold = 1.3` (پیش‌فرض)
+بر اساس **آستانه پایه (Base Threshold)**: `self.volume_multiplier_threshold`
+
+```python
+# محل در کد: signal_generator.py:1472
+self.volume_multiplier_threshold = self.signal_config.get('volume_multiplier_threshold', 1.3)
+# مقدار پیش‌فرض: 1.3
+```
 
 | Volume Ratio | Trend | Pattern | توضیح |
 |-------------|-------|---------|-------|
@@ -1651,12 +1657,13 @@ else:
 **گام 4: تعیین تأیید حجمی (Volume Confirmation)**
 
 ```python
-is_confirmed_by_volume = current_ratio > volume_multiplier_threshold
+# signal_generator.py:1685
+is_confirmed_by_volume = current_ratio > self.volume_multiplier_threshold
 ```
 
 **شرط تأیید:**
-- اگر `Volume Ratio > 1.3` → سیگنال توسط حجم تأیید می‌شود
-- اگر `Volume Ratio ≤ 1.3` → سیگنال توسط حجم تأیید نمی‌شود
+- اگر `Volume Ratio > volume_multiplier_threshold` (پیش‌فرض: 1.3) → سیگنال توسط حجم تأیید می‌شود
+- اگر `Volume Ratio ≤ volume_multiplier_threshold` → سیگنال توسط حجم تأیید نمی‌شود
 
 **گام 5: محاسبه روند میانگین حجم (Volume MA Trend)**
 
@@ -1721,8 +1728,8 @@ Volume Confirmation Factor = 1.0 + (عامل تأیید حجمی × 0.4)
 weighted_volume_factor = 0.0
 total_weight_vol = 0.0
 
-for timeframe, is_confirmed in volume_confirmations.items():
-    tf_weight = timeframe_weights.get(timeframe, 1.0)
+for tf, is_confirmed in volume_confirmations.items():
+    tf_weight = self.timeframe_weights.get(tf, 1.0)
     weighted_volume_factor += (1 if is_confirmed else 0) * tf_weight
     total_weight_vol += tf_weight
 
