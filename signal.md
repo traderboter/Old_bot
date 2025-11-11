@@ -1582,7 +1582,7 @@ Volume Ratio = حجم فعلی / میانگین متحرک 20 دوره‌ای ح
 | `> 2.6` (2.0 × 1.3) | `strongly_increasing` | `climax_volume` | حجم بسیار بالا - احتمال اوج حرکت |
 | `> 1.95` (1.5 × 1.3) | `increasing` | `spike` | افزایش ناگهانی حجم |
 | `> 1.3` | `increasing` | `above_average` | حجم بالاتر از متوسط |
-| `< 0.867` (1/1.3) | `decreasing` | `below_average` | حجم کمتر از متوسط |
+| `< 0.77` (1/1.3) | `decreasing` | `below_average` | حجم کمتر از متوسط |
 | `< 0.51` (1/(1.3×1.5)) | `strongly_decreasing` | `dry_up` | حجم بسیار پایین - خشک شدن بازار |
 | بقیه موارد | `neutral` | `normal` | حجم عادی |
 
