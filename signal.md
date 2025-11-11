@@ -3473,6 +3473,20 @@ analysis_data['price_channels'] = self.detect_price_channels(
 
 کانال‌های قیمتی نواحی‌ای هستند که قیمت بین دو خط موازی (بالا و پایین) حرکت می‌کند. شناسایی کانال برای پیش‌بینی **bounce** (بازگشت از دیوار) یا **breakout** (شکست) استفاده می‌شود.
 
+**⚠️ نکته پارامترها:** پارامترهای price channels از `self.channel_config` می‌آیند (signal_generator.py:1527-1532):
+
+```python
+# محل در کد: signal_generator.py:1527-1532
+self.channel_config = self.signal_config.get('price_channels', {})
+self.channel_enabled = self.channel_config.get('enabled', True)
+self.channel_lookback = self.channel_config.get('lookback', 100)
+self.channel_min_touches = self.channel_config.get('min_touches', 3)
+self.channel_quality_threshold = self.channel_config.get('quality_threshold', 0.7)
+# مقادیر پیش‌فرض: enabled=True, lookback=100, min_touches=3, quality_threshold=0.7
+```
+
+**⚠️ نکته امتیازات:** امتیازات در خود کد به صورت ثابت است (4.0 برای breakout، 3.0 برای bounce) - signal_generator.py:2751, 2754, 2757, 2760
+
 ---
 
 ##### الگوریتم شناسایی (5 مرحله)
@@ -3484,12 +3498,16 @@ analysis_data['price_channels'] = self.detect_price_channels(
 ```python
 peaks, valleys = self.find_peaks_and_valleys(
     closes,
-    distance=5,
-    prominence_factor=0.1
+    distance=self.peak_detection_settings['distance'],    # پیش‌فرض: 5
+    prominence_factor=self.peak_detection_settings['prominence_factor']  # پیش‌فرض: 0.1
 )
 ```
 
-**شرط:** حداقل `min_touches` (پیش‌فرض: 3) peak و valley نیاز است.
+**شرط:** حداقل `min_touches` peak و valley نیاز است (خط 2686):
+```python
+if len(peaks) >= min_touches and len(valleys) >= min_touches:
+    # min_touches از self.channel_min_touches می‌آید (پیش‌فرض: 3)
+```
 
 ---
 
@@ -3595,8 +3613,10 @@ quality = min(1.0, 9 / 6) = min(1.0, 1.5) = 1.0  # کیفیت عالی ✓
 
 **فیلتر کیفیت:**
 ```python
-if quality >= self.channel_quality_threshold:  # پیش‌فرض: 0.6
+# signal_generator.py:2732
+if valid_up_touches >= min_touches - 1 and valid_down_touches >= min_touches - 1 and channel_quality >= self.channel_quality_threshold:
     # کانال قبول شد
+    # self.channel_quality_threshold پیش‌فرض: 0.7
 ```
 
 ---
@@ -3607,11 +3627,14 @@ if quality >= self.channel_quality_threshold:  # پیش‌فرض: 0.6
 
 ```python
 # موقعیت در کانال (0.0 = کف, 1.0 = سقف)
-position_in_channel = (last_close - down_line_current) / channel_width
+# signal_generator.py:2722-2723
+position_in_channel = (last_close - down_line_current) / channel_width if channel_width > 0 else 0.5
 
 # تشخیص Breakout
-is_breakout_up = last_close > up_line_current + up_dev
-is_breakout_down = last_close < down_line_current - down_dev
+# signal_generator.py:2725-2727
+is_breakout_up = last_close > up_line_current + up_dev if up_dev > 0 else last_close > up_line_current * 1.01
+is_breakout_down = last_close < down_line_current - down_dev if down_dev > 0 else last_close < down_line_current * 0.99
+breakout_direction = 'up' if is_breakout_up else 'down' if is_breakout_down else None
 ```
 
 **موقعیت در کانال:**
@@ -3684,20 +3707,20 @@ Breakout Down: price < lower_line - std_deviation
 
 **1. Channel Breakout (شکست کانال)**
 
-**کد:** `2749-2754`
+**کد:** `signal_generator.py:2749-2754`
 
 ```python
 if breakout_direction == 'up':
     results['signal'] = {
         'type': 'channel_breakout',
         'direction': 'bullish',
-        'score': 4.0 * channel_quality
+        'score': 4.0 * channel_quality  # امتیاز ثابت: 4.0
     }
 elif breakout_direction == 'down':
     results['signal'] = {
         'type': 'channel_breakout',
         'direction': 'bearish',
-        'score': 4.0 * channel_quality
+        'score': 4.0 * channel_quality  # امتیاز ثابت: 4.0
     }
 ```
 
@@ -3713,20 +3736,20 @@ elif breakout_direction == 'down':
 
 **2. Channel Bounce (بازگشت از دیوار)**
 
-**کد:** `2755-2760`
+**کد:** `signal_generator.py:2755-2760`
 
 ```python
 elif position_in_channel < 0.2:  # نزدیک کف
     results['signal'] = {
         'type': 'channel_bounce',
         'direction': 'bullish',
-        'score': 3.0 * channel_quality
+        'score': 3.0 * channel_quality  # امتیاز ثابت: 3.0
     }
 elif position_in_channel > 0.8:  # نزدیک سقف
     results['signal'] = {
         'type': 'channel_bounce',
         'direction': 'bearish',
-        'score': 3.0 * channel_quality
+        'score': 3.0 * channel_quality  # امتیاز ثابت: 3.0
     }
 ```
 
