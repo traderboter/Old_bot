@@ -441,12 +441,12 @@ else:
 # محل در کد: signal_generator.py:4402-4407
 if trends_aligned:
     # روندها همراستا
-    structure_score *= (1 + trend_bonus_mult * (min_strength / 3))
-    # trend_bonus_mult پیش‌فرض = 1.5
+    structure_score *= (1 + self.htf_score_config['trend_bonus_mult'] * (min_strength / 3))
+    # پیش‌فرض htf_score_config['trend_bonus_mult'] = 1.5
 else:
     # روندها مخالف
-    structure_score *= (1 - trend_penalty_mult * (min_strength / 3))
-    # trend_penalty_mult پیش‌فرض = 1.5
+    structure_score *= (1 - self.htf_score_config['trend_penalty_mult'] * (min_strength / 3))
+    # پیش‌فرض htf_score_config['trend_penalty_mult'] = 1.5
 ```
 
 **3. تأثیر Trend Phase:**
@@ -474,22 +474,32 @@ def _get_trend_phase_multiplier(phase: str) -> float:
 
 ```python
 # محل در کد: signal_generator.py:4395-4429
+# توجه: مقادیر از self.htf_score_config می‌آیند (signal_generator.py:1499-1507)
+
+# مقادیر پیش‌فرض htf_score_config:
+# - base: 1.0
+# - confirm_bonus: 0.2
+# - trend_bonus_mult: 1.5
+# - contradict_penalty: 0.3
+# - trend_penalty_mult: 1.5
+# - min_score: 0.5
+# - max_score: 1.5
 
 # مرحله 1: امتیاز پایه
-base_score = 1.0  # پیش‌فرض
+base_score = self.htf_score_config['base']  # پیش‌فرض: 1.0
 structure_score = base_score
 
 # مرحله 2: اضافه/کسر Bonus/Penalty ثابت
 if trends_aligned:
-    structure_score += 0.2  # confirm_bonus
+    structure_score += self.htf_score_config['confirm_bonus']  # پیش‌فرض: 0.2
 else:
-    structure_score -= 0.3  # contradict_penalty
+    structure_score -= self.htf_score_config['contradict_penalty']  # پیش‌فرض: 0.3
 
 # مرحله 3: اعمال Multiplier متغیر (بزرگترین تأثیر)
 if trends_aligned:
-    structure_score *= (1 + 1.5 * (min_strength / 3))
+    structure_score *= (1 + self.htf_score_config['trend_bonus_mult'] * (min_strength / 3))  # پیش‌فرض mult: 1.5
 else:
-    structure_score *= (1 - 1.5 * (min_strength / 3))
+    structure_score *= (1 - self.htf_score_config['trend_penalty_mult'] * (min_strength / 3))  # پیش‌فرض mult: 1.5
 
 # مرحله 4: تنظیم بر اساس momentum alignment
 if momentum_aligned:
@@ -506,7 +516,9 @@ if at_support_zone or at_resistance_zone:
     structure_score *= 1.2  # +20%
 
 # مرحله 7: محدودیت min/max
-structure_score = max(min(structure_score, 1.5), 0.5)  # محدود به [0.5, 1.5]
+structure_score = max(min(structure_score,
+                           self.htf_score_config['max_score']),  # پیش‌فرض: 1.5
+                      self.htf_score_config['min_score'])  # پیش‌فرض: 0.5
 ```
 
 ---
@@ -515,10 +527,10 @@ structure_score = max(min(structure_score, 1.5), 0.5)  # محدود به [0.5, 1
 
 محاسبه کامل با strength = 3:
 ```python
-structure_score = 1.0           # base
-structure_score += 0.2          # confirm_bonus → 1.2
-structure_score *= (1 + 1.5)    # multiplier → 1.2 * 2.5 = 3.0
-structure_score = min(3.0, 1.5) # محدودیت max → 1.5
+structure_score = 1.0           # base (پیش‌فرض htf_score_config['base'])
+structure_score += 0.2          # confirm_bonus (پیش‌فرض htf_score_config['confirm_bonus']) → 1.2
+structure_score *= (1 + 1.5)    # multiplier (پیش‌فرض htf_score_config['trend_bonus_mult']) → 1.2 * 2.5 = 3.0
+structure_score = min(3.0, 1.5) # محدودیت max (پیش‌فرض htf_score_config['max_score']) → 1.5
 # نتیجه نهایی: 1.5
 ```
 
@@ -534,10 +546,10 @@ structure_score = min(3.0, 1.5) # محدودیت max → 1.5
 
 محاسبه کامل با strength = 3:
 ```python
-structure_score = 1.0           # base
-structure_score -= 0.3          # contradict_penalty → 0.7
-structure_score *= (1 - 1.5)    # multiplier → 0.7 * (-0.5) = -0.35
-structure_score = max(-0.35, 0.5) # محدودیت min → 0.5
+structure_score = 1.0           # base (پیش‌فرض htf_score_config['base'])
+structure_score -= 0.3          # contradict_penalty (پیش‌فرض htf_score_config['contradict_penalty']) → 0.7
+structure_score *= (1 - 1.5)    # multiplier (پیش‌فرض htf_score_config['trend_penalty_mult']) → 0.7 * (-0.5) = -0.35
+structure_score = max(-0.35, 0.5) # محدودیت min (پیش‌فرض htf_score_config['min_score']) → 0.5
 # نتیجه نهایی: 0.5
 ```
 
@@ -580,7 +592,7 @@ structure_score = max(-0.35, 0.5) # محدودیت min → 0.5
 structure_score = 50  # امتیاز اولیه
 min_strength = min(2, 3) = 2
 
-# اعمال trend bonus
+# اعمال trend bonus (از htf_score_config['trend_bonus_mult'] - پیش‌فرض: 1.5)
 structure_score *= (1 + 1.5 * (2 / 3))
 structure_score = 50 * (1 + 1.0) = 50 * 2.0 = 100
 
