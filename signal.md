@@ -3913,11 +3913,29 @@ RR = 6.0:1 ✓✓✓
 ```python
 analysis_data['cyclical_patterns'] = self.detect_cyclical_patterns(
     df,
-    lookback=200  # حداقل 200 کندل برای FFT
+    lookback=self.cycle_lookback  # مقدار پیش‌فرض: 200
 )
 ```
 
 این تحلیل با **FFT (Fast Fourier Transform)** الگوهای تکرارشونده (چرخه‌ای) در قیمت را شناسایی و **20 کندل آینده** را پیش‌بینی می‌کند.
+
+**پارامترهای Cyclical Patterns:**
+محل در کد: `signal_generator.py:1535-1539`
+
+```python
+self.cycle_config = self.signal_config.get('cyclical_patterns', {})
+self.cycle_enabled = self.cycle_config.get('enabled', True)
+self.cycle_lookback = self.cycle_config.get('lookback', 200)
+self.cycle_min_cycles = self.cycle_config.get('min_cycles', 2)
+self.cycle_fourier_periods = self.cycle_config.get('fourier_periods', [5, 10, 20, 40, 60])
+```
+
+| پارامتر | مقدار پیش‌فرض | توضیح |
+|---------|---------------|-------|
+| `enabled` | `True` | فعال/غیرفعال بودن تحلیل چرخه‌ای |
+| `lookback` | `200` | تعداد کندل برای FFT |
+| `min_cycles` | `2` | حداقل تعداد چرخه‌های قوی برای تولید سیگنال |
+| `fourier_periods` | `[5, 10, 20, 40, 60]` | دوره‌های Fourier (فعلاً استفاده نمی‌شود) |
 
 ---
 
@@ -4171,16 +4189,15 @@ forecast_strength = abs(forecast[-1] - closes[-1]) / closes[-1]
 
 ##### امتیازدهی
 
-**کد:** `signal_generator.py:2843-2857, 5328-5338`
+**کد:** `signal_generator.py:2843-2857`
 
 ```python
 # محاسبه امتیاز
 prediction_clarity = min(1.0, forecast_strength * 5)  # 0.0 تا 1.0
 cycles_strength = min(1.0, sum(c['amplitude_percent'] for c in top_cycles) / 10)
 
-# امتیاز پایه: 2.5
-base_score = 2.5
-signal_score = base_score * prediction_clarity * cycles_strength
+# امتیاز پایه: 2.5 (hardcoded - از pattern_scores استفاده نمی‌شود)
+signal_score = 2.5 * prediction_clarity * cycles_strength
 
 if forecast_direction == 'bullish':
     results['signal'] = {
@@ -4197,6 +4214,8 @@ score = 2.5 × prediction_clarity × cycles_strength
 prediction_clarity = min(1.0, |forecast_change| × 5)
 cycles_strength = min(1.0, Σ amplitude_percent / 10)
 ```
+
+**⚠️ نکته:** امتیاز پایه `2.5` در کد hardcoded است و از `self.pattern_scores` استفاده نمی‌کند.
 
 **جدول امتیازات:**
 
