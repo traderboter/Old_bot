@@ -2794,6 +2794,26 @@ analysis_data['support_resistance'] = self.detect_support_resistance(df, lookbac
 
 این تحلیل **سطوح کلیدی حمایت و مقاومت** را شناسایی کرده و قدرت آنها را محاسبه می‌کند. سطوح S/R نقاطی هستند که قیمت بارها در آنها واکنش نشان داده است.
 
+**⚠️ نکته امتیازات:** امتیازات شکست سطوح از `self.pattern_scores` می‌آیند (signal_generator.py:1471, 5287, 5294). مقادیر پیش‌فرض:
+
+```python
+# مقادیر پیش‌فرض pattern_scores (برای S/R):
+# - broken_resistance: 3.0
+# - broken_support: 3.0
+```
+
+**⚠️ نکته پارامترها:** پارامترهای peak detection از `self.peak_detection_settings` می‌آیند (signal_generator.py:1474-1478, 2325-2328):
+
+```python
+# محل در کد: signal_generator.py:1474-1478
+self.peak_detection_settings = {
+    'order': self.signal_config.get('peak_detection_order', 3),
+    'distance': self.signal_config.get('peak_detection_distance', 5),
+    'prominence_factor': self.signal_config.get('peak_detection_prominence_factor', 0.1)
+}
+# مقادیر پیش‌فرض: order=3, distance=5, prominence_factor=0.1
+```
+
 ---
 
 ##### 🔍 الگوریتم شناسایی (4 مرحله اصلی)
@@ -2801,20 +2821,21 @@ analysis_data['support_resistance'] = self.detect_support_resistance(df, lookbac
 **مرحله 1: پیدا کردن Peaks و Valleys (نقاط بازگشت)**
 
 ```python
+# signal_generator.py:2325-2328
 # استفاده از scipy.signal.find_peaks با فیلترهای کیفی
 resistance_peaks, _ = self.find_peaks_and_valleys(
     highs,
-    order=3,           # حداقل 3 کندل برای تشکیل peak
-    distance=5         # حداقل فاصله بین peaks
+    order=self.peak_detection_settings['order'],    # پیش‌فرض: 3
+    distance=self.peak_detection_settings['distance']  # پیش‌فرض: 5
 )
 _, support_valleys = self.find_peaks_and_valleys(
     lows,
-    order=3,
-    distance=5
+    order=self.peak_detection_settings['order'],
+    distance=self.peak_detection_settings['distance']
 )
 ```
 
-**کد مرجع:** `signal_generator.py:1605-1656`
+**کد مرجع:** `signal_generator.py:1605-1656` (تابع find_peaks_and_valleys)
 
 **فرآیند:**
 1. **Peak Detection:** قله‌های قیمت با `scipy.signal.find_peaks()` شناسایی می‌شوند
@@ -2824,7 +2845,9 @@ _, support_valleys = self.find_peaks_and_valleys(
 
 **فرمول Prominence:**
 ```python
-prominence = np.std(data) * prominence_factor  # prominence_factor = 0.1
+# signal_generator.py:1626
+prominence = np.std(valid_data) * prominence_factor
+# prominence_factor از self.peak_detection_settings می‌آید (پیش‌فرض: 0.1)
 quality_threshold = np.median(prominences) * 0.5
 valid_peaks = peaks[prominences >= quality_threshold]
 ```
@@ -3005,21 +3028,24 @@ def _analyze_sr_zones(levels, current_price, zone_type):
 **فقط شکست سطوح امتیاز می‌دهند:**
 
 ```python
+# signal_generator.py:5284-5297
 # 1. شکست مقاومت (Bullish)
-if broken_resistance:
-    level_strength = broken_resistance['strength']  # 0.0 تا 1.0
-    base_score = pattern_scores['broken_resistance']  # 3.0
-    score = base_score * timeframe_weight * level_strength
+if sr_data.get('broken_resistance'):
+    resistance_level = sr_data['broken_resistance']
+    level_str = resistance_level.get('strength', 1.0) if isinstance(resistance_level, dict) else 1.0
+    score = self.pattern_scores.get('broken_resistance', 3.0) * tf_weight * level_str
     bullish_score += score
+    all_signals.append({'type': 'broken_resistance', 'timeframe': tf, 'score': score, 'direction': 'bullish'})
 
     # مثال: 3.0 * 1.0 * 0.85 = +2.55 امتیاز
 
 # 2. شکست حمایت (Bearish)
-if broken_support:
-    level_strength = broken_support['strength']
-    base_score = pattern_scores['broken_support']  # 3.0
-    score = base_score * timeframe_weight * level_strength
+if sr_data.get('broken_support'):
+    support_level = sr_data['broken_support']
+    level_str = support_level.get('strength', 1.0) if isinstance(support_level, dict) else 1.0
+    score = self.pattern_scores.get('broken_support', 3.0) * tf_weight * level_str
     bearish_score += score
+    all_signals.append({'type': 'broken_support', 'timeframe': tf, 'score': score, 'direction': 'bearish'})
 
     # مثال: 3.0 * 1.0 * 0.90 = +2.70 امتیاز
 ```
