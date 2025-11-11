@@ -6845,11 +6845,95 @@ successful_analysis_results = {
 
 ---
 
-#### 0. فیلتر وضوح جهت (Direction Clarity Filter)
+#### 0. فیلتر نوسان افراطی (Volatility Rejection Filter)
 
-⚠️ **این اولین فیلتر بحرانی است** - قبل از همه فیلترهای دیگر!
+⚠️ **این اولین فیلتر بحرانی است** - بلافاصله بعد از محاسبه امتیازات!
 
-**محل:** `signal_generator.py:4970-4977` و `5391-5397`
+**محل:** `signal_generator.py:4970-4972` و `5352-5355`
+
+سیگنال **رد می‌شود** اگر حتی **یک تایم‌فریم** نوسان افراطی (خیلی زیاد یا خیلی کم) داشته باشد.
+
+⚠️ **این فیلتر در دو مرحله اجرا می‌شود:**
+
+**مرحله 1: تشخیص در calculate_multi_timeframe_score**
+
+```python
+# signal_generator.py:5352-5355
+# در هر تایم‌فریم بررسی می‌شود
+volatility_data = result.get('volatility', {})
+volatility_scores[tf] = volatility_data
+
+# اگر حتی یک تایم‌فریم نوسان افراطی داشته باشد
+if volatility_data.get('reject', False):
+    vol_reject_signal = True  # پرچم rejection را set می‌کند
+```
+
+**مرحله 2: رد سیگنال در analyze_symbol**
+
+```python
+# signal_generator.py:4970-4972
+# بررسی پرچم rejection که از calculate_multi_timeframe_score برمی‌گردد
+if score_result.get('volatility_rejection', False):
+    logger.info(f"Rejected signal for {symbol} due to extreme volatility.")
+    return None  # 🚫 سیگنال رد می‌شود!
+```
+
+##### چه زمانی volatility_data.get('reject') = True؟
+
+این در تحلیل volatility هر تایم‌فریم تعیین می‌شود (بخش 3.4). معمولاً زمانی که:
+- ATR خیلی بالا باشد (نوسان بیش از حد)
+- ATR خیلی پایین باشد (بازار خفته)
+- Bollinger Bands خیلی باز یا خیلی بسته باشد
+
+##### چرا مهم است؟
+
+**نوسان بیش از حد:**
+- قیمت‌ها خیلی سریع حرکت می‌کنند
+- Stop Loss ممکن است hit شود
+- ریسک خیلی بالاست
+
+**نوسان خیلی کم:**
+- قیمت حرکت نمی‌کند
+- Take Profit احتمالاً hit نمی‌شود
+- فرصت معامله ضعیف است
+
+##### مثال:
+
+```python
+# در یک تایم‌فریم:
+volatility_data = {
+    'atr': 150.0,          # خیلی بالا!
+    'atr_percent': 5.2,    # 5.2% نوسان
+    'reject': True,        # 🚫 باید رد شود
+    'score': 0.3           # امتیاز پایین
+}
+
+# در calculate_multi_timeframe_score:
+if volatility_data.get('reject', False):  # True!
+    vol_reject_signal = True
+
+# برگشت به analyze_symbol:
+result_output = {'volatility_rejection': True, ...}
+
+# در analyze_symbol:
+if score_result.get('volatility_rejection', False):  # True!
+    return None  # سیگنال رد شد!
+```
+
+##### اهمیت:
+
+1. ✅ **Risk Management** - جلوگیری از ورود در شرایط خطرناک
+2. ✅ **Quality Control** - فقط در شرایط مناسب ورود
+3. ✅ **SL Protection** - کاهش احتمال hit شدن SL
+4. ✅ **TP Reachability** - افزایش شانس رسیدن به TP
+
+---
+
+#### 1. فیلتر وضوح جهت (Direction Clarity Filter)
+
+⚠️ **این دومین فیلتر بحرانی است** - بعد از Volatility rejection!
+
+**محل:** `signal_generator.py:4974-4977` و `5391-5397`
 
 سیگنال **رد می‌شود** اگر جهت واضح نباشد (neutral) یا خطایی رخ داده باشد (error).
 
@@ -6870,7 +6954,7 @@ elif bearish_score > bullish_score * margin:
 **شرایط رد:**
 
 ```python
-# signal_generator.py:4970-4977
+# signal_generator.py:4974-4977
 if final_direction == 'neutral' or final_direction == 'error':
     logger.debug(
         f"No clear direction for {symbol}: "
@@ -6949,7 +7033,7 @@ MARGIN = 1.1  # 10% اختلاف لازم است
 
 ---
 
-#### 1. فیلتر Risk/Reward Ratio
+#### 2. فیلتر Risk/Reward Ratio
 
 **محل:** `signal_generator.py:5037-5048`
 
@@ -6960,7 +7044,7 @@ if final_rr < min_rr:
     # سیگنال رد می‌شود
 ```
 
-#### 2. فیلتر حداقل امتیاز
+#### 3. فیلتر حداقل امتیاز
 
 **محل:** `signal_generator.py:5116-5125`
 
@@ -6976,84 +7060,6 @@ if score.final_score < min_score:
 - `strong_trend_high`: حداقل 36 (سخت‌تر)
 - `weak_trend_normal`: حداقل 35
 - `range` modes: حداقل 38-42 (سخت‌ترین)
-
-#### 3. فیلتر Volatility (نوسان افراطی)
-
-⚠️ **این فیلتر در دو مرحله اجرا می‌شود:**
-
-**مرحله 1: تشخیص در calculate_multi_timeframe_score**
-
-**محل:** `signal_generator.py:5352-5355`
-
-```python
-# در هر تایم‌فریم بررسی می‌شود
-volatility_data = result.get('volatility', {})
-volatility_scores[tf] = volatility_data
-
-# اگر حتی یک تایم‌فریم نوسان افراطی داشته باشد
-if volatility_data.get('reject', False):
-    vol_reject_signal = True  # پرچم rejection را set می‌کند
-```
-
-**مرحله 2: رد سیگنال در analyze_symbol**
-
-**محل:** `signal_generator.py:4970-4972`
-
-```python
-# بررسی پرچم rejection که از calculate_multi_timeframe_score برمی‌گردد
-if score_result.get('volatility_rejection', False):
-    logger.info(f"Rejected signal for {symbol} due to extreme volatility.")
-    return None  # 🚫 سیگنال رد می‌شود!
-```
-
-##### چه زمانی volatility_data.get('reject') = True؟
-
-این در تحلیل volatility هر تایم‌فریم تعیین می‌شود (بخش 2). معمولاً زمانی که:
-- ATR خیلی بالا باشد (نوسان بیش از حد)
-- ATR خیلی پایین باشد (بازار خفته)
-- Bollinger Bands خیلی باز یا خیلی بسته باشد
-
-##### چرا مهم است؟
-
-**نوسان بیش از حد:**
-- قیمت‌ها خیلی سریع حرکت می‌کنند
-- Stop Loss ممکن است hit شود
-- ریسک خیلی بالاست
-
-**نوسان خیلی کم:**
-- قیمت حرکت نمی‌کند
-- Take Profit احتمالاً hit نمی‌شود
-- فرصت معامله ضعیف است
-
-##### مثال:
-
-```python
-# در یک تایم‌فریم:
-volatility_data = {
-    'atr': 150.0,          # خیلی بالا!
-    'atr_percent': 5.2,    # 5.2% نوسان
-    'reject': True,        # 🚫 باید رد شود
-    'score': 0.3           # امتیاز پایین
-}
-
-# در calculate_multi_timeframe_score:
-if volatility_data.get('reject', False):  # True!
-    vol_reject_signal = True
-
-# برگشت به analyze_symbol:
-result_output = {'volatility_rejection': True, ...}
-
-# در analyze_symbol:
-if score_result.get('volatility_rejection', False):  # True!
-    return None  # سیگنال رد شد!
-```
-
-##### اهمیت:
-
-1. ✅ **Risk Management** - جلوگیری از ورود در شرایط خطرناک
-2. ✅ **Quality Control** - فقط در شرایط مناسب ورود
-3. ✅ **SL Protection** - کاهش احتمال hit شدن SL
-4. ✅ **TP Reachability** - افزایش شانس رسیدن به TP
 
 ---
 
