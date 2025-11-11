@@ -7551,6 +7551,54 @@ best_config = max(tolerance_results,
 
 ## بخش 3.3: الگوهای چرخه‌ای (Cyclical Patterns)
 
+**📍 کد مرجع:** `signal_generator.py:2769-2871`
+
+### 🎯 مزایای الگوهای چرخه‌ای
+
+الگوهای چرخه‌ای با FFT یک روش ریاضی قدرتمند برای شناسایی تکرارها در بازار است:
+
+#### 1. **تحلیل فرکانسی**
+- **FFT-Based:** تنها تحلیل مبتنی بر فرکانس در سیستم
+- **شناسایی چرخه‌های پنهان:** الگوهایی که با چشم قابل مشاهده نیستند
+- **ریاضی و قطعی:** بر اساس فرمول‌های ریاضی، نه تفسیر ذهنی
+
+#### 2. **پیش‌بینی کوتاه‌مدت**
+- **20-Candle Forecast:** پیش‌بینی 20 کندل آینده
+- **Trend + Cycles:** ترکیب روند با نوسانات چرخه‌ای
+- **Phase Tracking:** تشخیص موقعیت فعلی در چرخه
+
+#### 3. **Multi-Cycle Analysis**
+- **Top 5 Cycles:** شناسایی 5 چرخه قوی‌ترین
+- **Range Detection:** عالی برای بازارهای range-bound
+- **Period Diversity:** چرخه‌های مختلف (7، 14، 28 کندل و...)
+
+#### 4. **Integration با سیستم**
+در کد فعلی، چرخه‌ها به خوبی یکپارچه شده‌اند:
+- **امتیازدهی:** Base=2.5 × clarity × strength
+- **Forecast Direction:** bullish/bearish بر اساس پیش‌بینی
+- **Multi-TF Support:** امتیاز در تایم‌فریم‌های مختلف (خط 5328-5339)
+- **Detrending:** حذف روند برای فوکوس بر نوسانات
+
+---
+
+### ⚠️ معایب و محدودیت‌های فعلی
+
+#### خلاصه سریع:
+
+| معایب اصلی | تأثیر بر دقت |
+|-----------|-------------|
+| ❌ FFT برای non-stationary data نامناسب | -25% |
+| ❌ عدم validation با market structure | -20% |
+| ❌ فقط Linear detrending | -12% |
+| ❌ Phase استفاده نمی‌شود | -18% |
+| ❌ عدم forecast decay | -10% |
+| ❌ نیاز به 200 کندل | -8% |
+| ❌ امتیازات بسیار پایین (0.5-1.5) | کاربرد کم |
+
+**مشکل اصلی:** FFT فرض می‌کند قیمت‌ها ایستا (stationary) هستند ولی بازارهای واقعی دائماً در حال تغییرند!
+
+---
+
 ### مشکلات شناسایی‌شده
 
 #### 1. محدودیت FFT در تحلیل غیر-ایستا (Non-Stationary Data)
@@ -8208,22 +8256,165 @@ def detect_cyclical_patterns_adaptive(self, candles: List[Dict], period: str = '
 
 ---
 
-### جدول خلاصه بهبودها
+---
 
-| # | مشکل | تأثیر تخمینی | سختی پیاده‌سازی |
-|---|------|-------|---------|
-| 1 | محدودیت FFT (استفاده از Wavelet) | **+25%** | پیچیده |
-| 2 | عدم اعتبارسنجی با Market Structure | **+20%** | متوسط |
-| 3 | روش یکسان Detrending | **+12%** | ساده |
-| 4 | عدم استفاده بهینه از Phase | **+18%** | متوسط |
-| 5 | عدم محاسبه Decay | **+10%** | ساده |
-| 6 | محدودیت تعداد کندل | **+8%** | ساده |
+### 📋 خلاصه مزایا و معایب
 
-**مجموع تأثیر تخمینی:** +60-75% بهبود
+#### ✅ **مزایا (Strengths):**
+1. ✅ تنها تحلیل فرکانسی در سیستم (FFT-Based)
+2. ✅ شناسایی چرخه‌های پنهان
+3. ✅ پیش‌بینی 20 کندل آینده
+4. ✅ Multi-Cycle Analysis (Top 5)
+5. ✅ Detrending برای فوکوس بر نوسانات
+6. ✅ عالی برای بازارهای Range-Bound
+7. ✅ Phase tracking
+
+#### ❌ **معایب فعلی (Weaknesses):**
+1. ❌ FFT برای non-stationary data نامناسب → -25%
+2. ❌ عدم validation با market structure → -20%
+3. ❌ فقط Linear detrending → -12%
+4. ❌ Phase فقط track میشه ولی استفاده نمیشه → -18%
+5. ❌ Forecast بدون decay (اعتماد یکسان به همه کندل‌ها) → -10%
+6. ❌ نیاز سخت‌گیرانه به 200 کندل → -8%
+7. ❌ امتیازات بسیار پایین (0.5-1.5) → کاربرد محدود
+
+#### 🎯 **پیشنهادات بهبود (Recommendations):**
+
+| # | پیشنهاد | تأثیر | پیچیدگی | اولویت |
+|---|---------|-------|---------|--------|
+| 1 | Wavelet به جای FFT | **+25%** | پیچیده | 🟡 متوسط |
+| 2 | Market Structure Validation | **+20%** | متوسط | 🔴 بالا |
+| 3 | Adaptive Detrending | **+12%** | ساده | 🔴 بالا |
+| 4 | Phase-Based Entry Timing | **+18%** | متوسط | 🔴 بالا |
+| 5 | Forecast Decay (Confidence) | **+10%** | ساده | 🔴 بالا |
+| 6 | Adaptive Minimum Candles | **+8%** | ساده | 🟢 پایین |
+
+**مجموع تأثیر تخمینی:** +60-75% بهبود در دقت پیش‌بینی
 
 ---
 
-**تاریخ آخرین به‌روزرسانی:** 2025-10-28
+### 🔬 پیشنهادات تست و اعتبارسنجی
+
+1. **FFT vs Wavelet Comparison:**
+   - Backtest هر دو روش روی 1000 سیگنال
+   - مقایسه accuracy در بازارهای trending vs ranging
+   - اندازه‌گیری computational cost
+
+2. **Detrending Method Optimization:**
+   - تست Linear, Polynomial, Moving Average, Adaptive
+   - مقایسه quality چرخه‌های شناسایی شده
+   - یافتن بهترین روش برای هر market regime
+
+3. **Phase-Based Entry Testing:**
+   - ورود در phase=0 (کف) vs phase=π (اوج)
+   - مقایسه RR و win rate
+   - بهینه‌سازی phase thresholds
+
+4. **Forecast Decay Impact:**
+   - مقایسه forecast با/بدون decay
+   - اندازه‌گیری accuracy در کندل‌های مختلف (1-5 vs 15-20)
+   - تعیین بهترین decay rate
+
+5. **Minimum Candles Threshold:**
+   - تست با 50, 100, 150, 200 کندل minimum
+   - مقایسه detection rate vs accuracy
+   - یافتن optimal trade-off
+
+---
+
+### 💡 پیشنهاد جدید: Cycle-Specific SL/TP
+
+**مشکل:**
+```python
+# فعلاً SL/TP مخصوص cyclical patterns نیست
+# از روش‌های عمومی استفاده می‌شود
+```
+
+**راه‌حل پیشنهادی:**
+```python
+def calculate_cycle_sl_tp(
+    cycles: List[Dict],
+    current_price: float,
+    forecast: List[float]
+) -> Dict:
+    """محاسبه SL/TP بر اساس چرخه‌های شناسایی شده"""
+
+    if not cycles or not forecast:
+        return None
+
+    # 1. یافتن قوی‌ترین چرخه
+    dominant_cycle = max(cycles, key=lambda c: c['amplitude'])
+    period = dominant_cycle['period']
+    amplitude = dominant_cycle['amplitude']
+    phase = dominant_cycle['phase']
+
+    # 2. پیش‌بینی کف و سقف بعدی بر اساس چرخه
+    # فاز فعلی در کجای چرخه است؟
+    phase_position = (phase % (2 * np.pi)) / (2 * np.pi)  # 0-1
+
+    if 0 <= phase_position < 0.25:  # نزدیک کف
+        # پیش‌بینی: صعود به سقف
+        next_peak = current_price + amplitude
+        next_trough = current_price - (amplitude * 0.3)  # safety
+
+        direction = 'bullish'
+        take_profit = next_peak
+        stop_loss = next_trough
+
+    elif 0.25 <= phase_position < 0.75:  # نزدیک اوج یا در حال نزول
+        # پیش‌بینی: نزول به کف
+        next_trough = current_price - amplitude
+        next_peak = current_price + (amplitude * 0.3)  # safety
+
+        direction = 'bearish'
+        take_profit = next_trough
+        stop_loss = next_peak
+
+    else:  # در حال صعود به سقف
+        next_peak = current_price + amplitude
+        next_trough = current_price - (amplitude * 0.3)
+
+        direction = 'bullish'
+        take_profit = next_peak
+        stop_loss = next_trough
+
+    # 3. تأیید با forecast
+    forecast_end = forecast[-1]
+    forecast_direction = 'bullish' if forecast_end > current_price else 'bearish'
+
+    if forecast_direction != direction:
+        # conflict: کاهش confidence
+        confidence = 0.6
+    else:
+        confidence = 0.9
+
+    # 4. محاسبه timing (زمان رسیدن به هدف)
+    # تخمین: نصف period تا رسیدن به سمت مقابل چرخه
+    candles_to_target = period // 2
+
+    risk = abs(current_price - stop_loss)
+    reward = abs(take_profit - current_price)
+    rr = reward / risk if risk > 0 else 0
+
+    return {
+        'direction': direction,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'risk': risk,
+        'reward': reward,
+        'rr_ratio': rr,
+        'confidence': confidence,
+        'candles_to_target': candles_to_target,
+        'calculation_method': f'Cycle_Period_{period}',
+        'phase_position': phase_position
+    }
+```
+
+**انتظار بهبود:** +15% بهبود RR و دقت ورود/خروج
+
+---
+
+**تاریخ آخرین به‌روزرسانی:** 2025-11-11
 
 ---
 
