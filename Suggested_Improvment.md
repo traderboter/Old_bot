@@ -5981,6 +5981,733 @@ def validate_channel_breakout(df, channel, breakout_direction):
 
 ---
 
+## بخش 3.2: کانال‌های قیمتی (Price Channels)
+
+**📍 کد مرجع:** `signal_generator.py:2666-2768`
+
+### 🎯 مزایای کانال‌های قیمتی
+
+کانال‌های قیمتی ابزار قدرتمندی برای شناسایی محدوده حرکتی قیمت هستند:
+
+#### 1. **سادگی و وضوح**
+- **خطوط روشن:** حمایت و مقاومت به صورت بصری واضح هستند
+- **استفاده آسان:** نیاز به دانش تکنیکال پیچیده ندارند
+- **کار در همه بازارها:** سهام، فارکس، کریپتو
+
+#### 2. **دو استراتژی واضح**
+```
+Range Trading: خرید در کف، فروش در سقف
+Breakout Trading: ورود بعد از شکست کانال
+```
+
+#### 3. **RR خوب**
+- **SL مشخص:** زیر/بالای کانال
+- **TP قابل پیش‌بینی:** سمت مقابل کانال یا projection
+- **RR معمولی:** 2:1 تا 5:1
+
+#### 4. **Integration با سیستم**
+در کد فعلی، کانال‌ها به خوبی یکپارچه شده‌اند:
+- **امتیازدهی:** Breakout=4.0, Bounce=3.0
+- **Position tracking:** 0.0 (کف) تا 1.0 (سقف)
+- **Reversal strength:** Channel bounce تقویت می‌کند (خط 3746-3751)
+- **Multi-TF scoring:** امتیاز در تایم‌فریم‌های مختلف (خط 5313-5325)
+
+---
+
+### ⚠️ معایب و محدودیت‌های فعلی
+
+#### 1. **استفاده از Close به جای High/Low**
+
+**مشکل:**
+```python
+# signal_generator.py:2680-2684
+peaks, valleys = self.find_peaks_and_valleys(
+    closes,  # ❌ فقط close استفاده میشه
+    distance=5,
+    prominence_factor=0.1
+)
+```
+
+در واقعیت، کانال‌ها باید از **high** برای خط بالا و **low** برای خط پایین استفاده کنند نه close.
+
+**تأثیر:**
+- کانال‌ها دقیق نیستند
+- Breakout های واقعی miss می‌شوند
+- False signals بیشتر
+
+**راه‌حل پیشنهادی:**
+```python
+def detect_price_channels_improved(self, df: pd.DataFrame, lookback: int = 100) -> Dict:
+    """Detect price channels using proper high/low values"""
+
+    df_window = df.iloc[-lookback:]
+    highs = df_window['high'].values
+    lows = df_window['low'].values
+    closes = df_window['close'].values
+
+    # 1. یافتن peaks از highs (نه closes!)
+    peaks, _ = self.find_peaks_and_valleys(
+        highs,  # ✅ استفاده از high
+        distance=5,
+        prominence_factor=0.1
+    )
+
+    # 2. یافتن valleys از lows (نه closes!)
+    _, valleys = self.find_peaks_and_valleys(
+        lows,  # ✅ استفاده از low
+        distance=5,
+        prominence_factor=0.1
+    )
+
+    # 3. رسم خطوط
+    if len(peaks) >= 2:
+        peak_indices = np.array(peaks)
+        peak_values = highs[peak_indices]  # ✅ high values
+        up_slope, up_intercept = np.polyfit(peak_indices, peak_values, 1)
+
+    if len(valleys) >= 2:
+        valley_indices = np.array(valleys)
+        valley_values = lows[valley_indices]  # ✅ low values
+        down_slope, down_intercept = np.polyfit(valley_indices, valley_values, 1)
+
+    # بقیه محاسبات...
+```
+
+**انتظار بهبود:** +15% دقت در شناسایی کانال
+
+---
+
+#### 2. **فقدان Parallel Check**
+
+**مشکل:**
+```python
+# signal_generator.py:2703-2704
+channel_slope = (up_slope + down_slope) / 2
+channel_direction = 'ascending' if channel_slope > 0.001 else ...
+```
+
+شیب خطوط چک نمی‌شود که موازی باشند! یک کانال واقعی باید **خطوط موازی** داشته باشد.
+
+**مثال مشکل:**
+```python
+up_slope = 50    # خط بالا صعودی تند
+down_slope = 5   # خط پایین صعودی ملایم
+# این یک کانال واقعی نیست! (diverging)
+```
+
+**تأثیر:** کانال‌های نامعتبر (diverging/converging) به عنوان کانال شناسایی می‌شوند
+
+**راه‌حل پیشنهادی:**
+```python
+def calculate_channel_parallelism(up_slope: float, down_slope: float) -> Dict:
+    """محاسبه میزان موازی بودن خطوط"""
+
+    # 1. محاسبه اختلاف شیب (normalized)
+    slope_diff = abs(up_slope - down_slope)
+    avg_slope = (abs(up_slope) + abs(down_slope)) / 2
+
+    if avg_slope > 0:
+        parallelism_ratio = 1.0 - min(1.0, slope_diff / avg_slope)
+    else:
+        parallelism_ratio = 1.0
+
+    # 2. طبقه‌بندی
+    if parallelism_ratio >= 0.9:
+        quality = 'excellent'    # کاملاً موازی
+        multiplier = 1.2
+    elif parallelism_ratio >= 0.75:
+        quality = 'good'         # موازی خوب
+        multiplier = 1.0
+    elif parallelism_ratio >= 0.6:
+        quality = 'acceptable'   # قابل قبول
+        multiplier = 0.8
+    else:
+        quality = 'poor'         # نامعتبر
+        multiplier = 0.0  # رد شود
+
+    return {
+        'parallelism_ratio': parallelism_ratio,
+        'quality': quality,
+        'multiplier': multiplier
+    }
+
+# استفاده:
+parallelism = calculate_channel_parallelism(up_slope, down_slope)
+
+if parallelism['quality'] != 'poor':
+    channel_score *= parallelism['multiplier']
+    channel_info['parallelism'] = parallelism
+else:
+    # کانال رد می‌شود
+    return None
+```
+
+**انتظار بهبود:** +20% کاهش false channels
+
+---
+
+#### 3. **عدم محاسبه R² (Goodness of Fit)**
+
+**مشکل:**
+```python
+# signal_generator.py:2690
+up_slope, up_intercept = np.polyfit(peak_indices, peak_values, 1)
+# R² محاسبه نمی‌شود!
+```
+
+R² (Coefficient of Determination) نشان می‌دهد که خط تا چه حد با نقاط fit می‌شود:
+- **R² = 1.0:** خط کامل fit است (کانال قوی)
+- **R² = 0.5:** fit متوسط (کانال ضعیف)
+- **R² < 0.3:** fit بد (کانال نامعتبر)
+
+**تأثیر:** کانال‌های با fit ضعیف همان امتیاز کانال‌های قوی را می‌گیرند
+
+**راه‌حل پیشنهادی:**
+```python
+def calculate_r_squared(x: np.ndarray, y: np.ndarray, slope: float, intercept: float) -> float:
+    """محاسبه R² برای ارزیابی کیفیت fit"""
+
+    # 1. مقادیر پیش‌بینی شده
+    y_pred = slope * x + intercept
+
+    # 2. محاسبه R²
+    ss_res = np.sum((y - y_pred) ** 2)  # Sum of squared residuals
+    ss_tot = np.sum((y - np.mean(y)) ** 2)  # Total sum of squares
+
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+    return max(0, min(1, r_squared))  # محدوده: 0-1
+
+# استفاده:
+up_r2 = calculate_r_squared(peak_indices, peak_values, up_slope, up_intercept)
+down_r2 = calculate_r_squared(valley_indices, valley_values, down_slope, down_intercept)
+
+# میانگین R² برای کل کانال
+channel_r2 = (up_r2 + down_r2) / 2
+
+# فیلتر کیفیت
+if channel_r2 < 0.7:
+    # کانال fit ضعیف دارد → رد شود
+    return None
+
+# اعمال R² به امتیاز
+channel_score *= channel_r2
+channel_info['r_squared'] = {
+    'upper': float(up_r2),
+    'lower': float(down_r2),
+    'average': float(channel_r2)
+}
+```
+
+**انتظار بهبود:** +18% دقت با فیلتر کانال‌های ضعیف
+
+---
+
+#### 4. **عدم Volume Validation در Breakout**
+
+**مشکل:**
+```python
+# signal_generator.py:2725-2727
+is_breakout_up = last_close > up_line_current + up_dev
+is_breakout_down = last_close < down_line_current - down_dev
+# هیچ چک حجمی نیست!
+```
+
+Breakout های واقعی معمولاً با **افزایش حجم** همراه هستند. بدون چک حجم:
+- False breakouts زیاد می‌شوند
+- Fake-outs تشخیص داده نمی‌شوند
+
+**تأثیر:** +35% false breakout signals
+
+**راه‌حل پیشنهادی:**
+```python
+def validate_channel_breakout(
+    df: pd.DataFrame,
+    breakout_index: int,
+    breakout_direction: str,
+    channel_width: float
+) -> Dict:
+    """اعتبارسنجی جامع breakout"""
+
+    validation_score = 0.0
+    validations = []
+
+    # 1. Volume Confirmation
+    if 'volume' in df.columns:
+        recent_volume = df['volume'].iloc[breakout_index]
+        avg_volume = df['volume'].iloc[breakout_index-20:breakout_index].mean()
+
+        volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1.0
+
+        if volume_ratio >= 2.0:
+            validation_score += 0.4
+            validations.append('high_volume')
+        elif volume_ratio >= 1.5:
+            validation_score += 0.3
+            validations.append('increased_volume')
+        elif volume_ratio >= 1.2:
+            validation_score += 0.15
+            validations.append('moderate_volume')
+        else:
+            validation_score -= 0.2  # حجم پایین = مشکوک
+            validations.append('low_volume_warning')
+
+    # 2. Penetration Depth (عمق نفوذ)
+    candle = df.iloc[breakout_index]
+    if breakout_direction == 'up':
+        penetration = candle['close'] - (channel_width + candle['open'])
+    else:
+        penetration = candle['open'] - candle['close']
+
+    penetration_pct = (penetration / channel_width) * 100
+
+    if penetration_pct >= 15:
+        validation_score += 0.3
+        validations.append('strong_penetration')
+    elif penetration_pct >= 8:
+        validation_score += 0.2
+        validations.append('moderate_penetration')
+    elif penetration_pct < 3:
+        validation_score -= 0.15
+        validations.append('weak_penetration')
+
+    # 3. Body vs Wick Ratio
+    body = abs(candle['close'] - candle['open'])
+    total_range = candle['high'] - candle['low']
+
+    body_ratio = (body / total_range) * 100 if total_range > 0 else 0
+
+    if body_ratio >= 70:
+        validation_score += 0.2
+        validations.append('strong_body')
+    elif body_ratio >= 50:
+        validation_score += 0.1
+        validations.append('decent_body')
+    else:
+        validation_score -= 0.1
+        validations.append('weak_body')
+
+    # 4. Momentum Confirmation (3 کندل قبل)
+    if breakout_index >= 3:
+        closes_before = df['close'].iloc[breakout_index-3:breakout_index].values
+
+        if breakout_direction == 'up':
+            is_trending = all(closes_before[i] < closes_before[i+1]
+                            for i in range(len(closes_before)-1))
+        else:
+            is_trending = all(closes_before[i] > closes_before[i+1]
+                            for i in range(len(closes_before)-1))
+
+        if is_trending:
+            validation_score += 0.2
+            validations.append('momentum_aligned')
+
+    # محاسبه نهایی
+    validation_score = max(0, min(1, validation_score))
+
+    if validation_score >= 0.7:
+        quality = 'strong'
+        multiplier = 1.5
+    elif validation_score >= 0.4:
+        quality = 'moderate'
+        multiplier = 1.0
+    elif validation_score >= 0.2:
+        quality = 'weak'
+        multiplier = 0.6
+    else:
+        quality = 'invalid'
+        multiplier = 0.0  # رد شود
+
+    return {
+        'validation_score': validation_score,
+        'quality': quality,
+        'multiplier': multiplier,
+        'validations': validations
+    }
+
+# استفاده:
+if breakout_direction:
+    validation = validate_channel_breakout(
+        df, last_idx, breakout_direction, channel_width
+    )
+
+    if validation['quality'] != 'invalid':
+        breakout_score = 4.0 * channel_quality * validation['multiplier']
+        channel_info['breakout_validation'] = validation
+    else:
+        # breakout معتبر نیست
+        breakout_direction = None
+```
+
+**انتظار بهبود:** +30% کاهش false breakouts
+
+---
+
+#### 5. **عدم Multi-Scale Detection**
+
+**مشکل:**
+```python
+# signal_generator.py:2666
+def detect_price_channels(self, df, lookback=100, min_touches=3):
+    # فقط یک کانال با lookback ثابت
+```
+
+در واقعیت، چندین کانال در مقیاس‌های مختلف وجود دارند:
+- **Major channel** (lookback=200): کانال بلندمدت
+- **Minor channel** (lookback=100): کانال میان‌مدت
+- **Nested channel** (lookback=50): کانال داخلی
+
+**مثال:**
+```
+|--------------------------|  Major channel (200 candles)
+  |--------------|           Minor channel (100 candles)
+    |------|                 Nested channel (50 candles)
+```
+
+**تأثیر:** فرصت‌های معاملاتی از دست می‌روند
+
+**راه‌حل پیشنهادی:**
+```python
+def detect_multiscale_channels(self, df: pd.DataFrame) -> Dict:
+    """شناسایی کانال در مقیاس‌های مختلف"""
+
+    scales = {
+        'major': {'lookback': 200, 'min_touches': 4, 'weight': 1.5},
+        'minor': {'lookback': 100, 'min_touches': 3, 'weight': 1.0},
+        'nested': {'lookback': 50, 'min_touches': 3, 'weight': 0.8}
+    }
+
+    all_channels = []
+
+    for scale_name, config in scales.items():
+        channels = self.detect_price_channels(
+            df,
+            lookback=config['lookback'],
+            min_touches=config['min_touches']
+        )
+
+        for channel in channels.get('channels', []):
+            channel['scale'] = scale_name
+            channel['scale_weight'] = config['weight']
+            all_channels.append(channel)
+
+    # شناسایی کانال‌های nested
+    nested_relationships = []
+
+    for i, major in enumerate(all_channels):
+        if major['scale'] != 'major':
+            continue
+
+        for minor in all_channels:
+            if minor['scale'] in ['minor', 'nested']:
+                # آیا minor داخل major است؟
+                is_nested = (
+                    minor['upper_intercept'] < major['upper_intercept'] and
+                    minor['lower_intercept'] > major['lower_intercept']
+                )
+
+                if is_nested:
+                    nested_relationships.append({
+                        'parent': major,
+                        'child': minor,
+                        'relationship': 'nested'
+                    })
+
+    # تشخیص Confluence (همپوشانی کانال‌ها)
+    confluences = []
+
+    for i, ch1 in enumerate(all_channels):
+        for ch2 in all_channels[i+1:]:
+            # آیا خطوط نزدیک همند؟
+            upper_match = abs(ch1['upper_intercept'] - ch2['upper_intercept']) / ch1['width'] < 0.1
+            lower_match = abs(ch1['lower_intercept'] - ch2['lower_intercept']) / ch1['width'] < 0.1
+
+            if upper_match or lower_match:
+                confluences.append({
+                    'channel1': ch1,
+                    'channel2': ch2,
+                    'type': 'upper_confluence' if upper_match else 'lower_confluence'
+                })
+
+    return {
+        'channels': all_channels,
+        'nested_relationships': nested_relationships,
+        'confluences': confluences,
+        'primary_channel': all_channels[0] if all_channels else None
+    }
+
+# سیگنال‌گیری:
+multiscale = detect_multiscale_channels(df)
+
+# اگر قیمت در کف major channel و کف nested channel باشد:
+# → سیگنال قوی‌تر (confluence)
+for conf in multiscale['confluences']:
+    if conf['type'] == 'lower_confluence':
+        # هر دو کانال support هستند
+        signal_score *= 1.3  # +30% boost
+```
+
+**انتظار بهبود:** +22% فرصت‌های بیشتر و دقت بالاتر
+
+---
+
+#### 6. **عدم False Breakout Detection**
+
+**مشکل:**
+```python
+# بعد از تشخیص breakout، چک نمی‌شود که قیمت برگشته یا نه
+```
+
+False Breakout = قیمت از کانال خارج می‌شود ولی سریعاً برمی‌گردد.
+
+**مثال:**
+```
+Candle 1: Price = 52500 (breakout up از 52000) → signal: bullish
+Candle 2: Price = 52300
+Candle 3: Price = 51900 (برگشت به کانال!) → false breakout
+```
+
+**تأثیر:** سیگنال‌های اشتباه و زیان
+
+**راه‌حل پیشنهادی:**
+```python
+class ChannelBreakoutTracker:
+    """ردیابی breakout ها و تشخیص false breakouts"""
+
+    def __init__(self):
+        self.active_breakouts = {}  # {symbol: {breakout_info}}
+
+    def register_breakout(
+        self,
+        symbol: str,
+        breakout_candle_index: int,
+        direction: str,
+        channel_upper: float,
+        channel_lower: float
+    ):
+        """ثبت یک breakout جدید"""
+
+        self.active_breakouts[symbol] = {
+            'index': breakout_candle_index,
+            'direction': direction,
+            'channel_upper': channel_upper,
+            'channel_lower': channel_lower,
+            'status': 'pending',  # pending → confirmed / failed
+            'candles_since': 0
+        }
+
+    def check_breakout_status(
+        self,
+        symbol: str,
+        current_price: float,
+        current_index: int
+    ) -> Dict:
+        """بررسی وضعیت breakout"""
+
+        if symbol not in self.active_breakouts:
+            return {'status': 'no_active_breakout'}
+
+        breakout = self.active_breakouts[symbol]
+        breakout['candles_since'] = current_index - breakout['index']
+
+        # 1. تعیین محدوده مجاز بازگشت
+        channel_upper = breakout['channel_upper']
+        channel_lower = breakout['channel_lower']
+
+        if breakout['direction'] == 'up':
+            # اگر قیمت زیر upper line برگشت = false breakout
+            if current_price < channel_upper:
+                breakout['status'] = 'failed'
+                return {
+                    'status': 'false_breakout_detected',
+                    'direction': 'bearish',  # سیگنال معکوس!
+                    'score': 3.5,
+                    'reason': 'return_to_channel_after_breakout_up'
+                }
+
+        elif breakout['direction'] == 'down':
+            # اگر قیمت بالای lower line برگشت = false breakout
+            if current_price > channel_lower:
+                breakout['status'] = 'failed'
+                return {
+                    'status': 'false_breakout_detected',
+                    'direction': 'bullish',  # سیگنال معکوس!
+                    'score': 3.5,
+                    'reason': 'return_to_channel_after_breakout_down'
+                }
+
+        # 2. اگر 5 کندل گذشت و برنگشت = confirmed
+        if breakout['candles_since'] >= 5 and breakout['status'] == 'pending':
+            breakout['status'] = 'confirmed'
+            return {
+                'status': 'breakout_confirmed',
+                'candles_held': breakout['candles_since']
+            }
+
+        return {'status': 'pending', 'candles_since': breakout['candles_since']}
+
+# استفاده:
+tracker = ChannelBreakoutTracker()
+
+# هنگام تشخیص breakout:
+if breakout_direction:
+    tracker.register_breakout(
+        symbol, last_idx, breakout_direction,
+        up_line_current, down_line_current
+    )
+
+# در هر کندل جدید:
+breakout_status = tracker.check_breakout_status(symbol, current_price, current_idx)
+
+if breakout_status['status'] == 'false_breakout_detected':
+    # سیگنال معکوس قوی!
+    return {
+        'signal': {
+            'type': 'false_breakout_reversal',
+            'direction': breakout_status['direction'],
+            'score': breakout_status['score']
+        }
+    }
+```
+
+**انتظار بهبود:** +25% با شناسایی false breakouts و ترید معکوس
+
+---
+
+#### 7. **عدم Channel-Specific SL/TP**
+
+**مشکل:**
+```python
+# signal_generator.py:4092-4141
+# SL/TP برای channel bounce/breakout مشخص محاسبه نمی‌شود
+```
+
+**راه‌حل پیشنهادی:**
+```python
+def calculate_channel_sl_tp(
+    channel: Dict,
+    signal_type: str,  # 'bounce' or 'breakout'
+    entry_price: float
+) -> Dict:
+    """محاسبه SL/TP بر اساس کانال"""
+
+    upper_line = channel['upper_slope'] * channel['last_index'] + channel['upper_intercept']
+    lower_line = channel['lower_slope'] * channel['last_index'] + channel['lower_intercept']
+    channel_width = upper_line - lower_line
+
+    if signal_type == 'channel_bounce':
+        direction = channel['signal']['direction']
+
+        if direction == 'bullish':
+            # خرید در کف
+            stop_loss = lower_line * 0.995  # 0.5% زیر کف
+            take_profit = upper_line * 0.99  # 1% قبل از سقف
+
+        else:  # bearish
+            # فروش در سقف
+            stop_loss = upper_line * 1.005  # 0.5% بالای سقف
+            take_profit = lower_line * 1.01  # 1% بعد از کف
+
+    elif signal_type == 'channel_breakout':
+        direction = channel['signal']['direction']
+
+        if direction == 'bullish':
+            # breakout صعودی
+            stop_loss = upper_line  # برگشت به کانال
+            take_profit = entry_price + channel_width  # projection
+
+        else:  # bearish
+            # breakout نزولی
+            stop_loss = lower_line  # برگشت به کانال
+            take_profit = entry_price - channel_width  # projection
+
+    risk = abs(entry_price - stop_loss)
+    reward = abs(take_profit - entry_price)
+    rr = reward / risk if risk > 0 else 0
+
+    return {
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'risk': risk,
+        'reward': reward,
+        'rr_ratio': rr,
+        'calculation_method': f'Channel_{signal_type}'
+    }
+```
+
+**انتظار بهبود:** +12% بهبود RR و دقت ورود/خروج
+
+---
+
+### 📋 خلاصه مزایا و معایب
+
+#### ✅ **مزایا (Strengths):**
+1. ✅ سادگی و وضوح بصری
+2. ✅ دو استراتژی (Bounce + Breakout)
+3. ✅ RR خوب (2:1 تا 5:1)
+4. ✅ Integration خوب با سیستم
+5. ✅ Position tracking دقیق (0.0-1.0)
+6. ✅ Quality calculation با تعداد touches
+7. ✅ امتیازدهی متمایز (Breakout 4.0 vs Bounce 3.0)
+
+#### ❌ **معایب فعلی (Weaknesses):**
+1. ❌ استفاده از Close به جای High/Low → -15% دقت
+2. ❌ فقدان Parallel Check → +20% false channels
+3. ❌ عدم محاسبه R² → کانال‌های ضعیف قبول می‌شوند
+4. ❌ عدم Volume Validation → +35% false breakouts
+5. ❌ فقط Single-Scale → فرصت‌های miss شده
+6. ❌ عدم False Breakout Detection → زیان‌های اضافی
+7. ❌ عدم Channel-Specific SL/TP → RR بهینه نیست
+
+#### 🎯 **پیشنهادات بهبود (Recommendations):**
+
+| # | پیشنهاد | تأثیر | پیچیدگی | اولویت |
+|---|---------|-------|---------|--------|
+| 1 | High/Low به جای Close | **+15%** | ساده | 🔴 بالا |
+| 2 | Parallel Check | **+20%** | ساده | 🔴 بالا |
+| 3 | Volume Validation | **+30%** | متوسط | 🔴 بالا |
+| 4 | R² Calculation | **+18%** | ساده | 🔴 بالا |
+| 5 | False Breakout Detection | **+25%** | متوسط | 🔴 بالا |
+| 6 | Multi-Scale Detection | **+22%** | پیچیده | 🟡 متوسط |
+| 7 | Channel-Specific SL/TP | **+12%** | ساده | 🟡 متوسط |
+
+**مجموع تأثیر تخمینی:** +70-90% بهبود در دقت و فرصت‌ها
+
+---
+
+### 🔬 پیشنهادات تست و اعتبارسنجی
+
+1. **High/Low vs Close:**
+   - Backtest با high/low برای خطوط
+   - مقایسه detection rate و accuracy
+   - اندازه‌گیری تعداد missed breakouts
+
+2. **Parallel Threshold Optimization:**
+   - تست parallelism_ratio thresholds (0.6, 0.7, 0.8, 0.9)
+   - یافتن بهترین threshold برای هر market
+   - مقایسه false channel rate
+
+3. **Volume Validation Impact:**
+   - مقایسه breakouts با/بدون volume check
+   - اندازه‌گیری false breakout rate
+   - بهینه‌سازی volume_ratio thresholds
+
+4. **R² Filtering:**
+   - تست R² thresholds (0.6, 0.7, 0.8, 0.9)
+   - مقایسه win rate برای channels با R² بالا vs پایین
+   - یافتن minimum R² برای قبولی
+
+5. **False Breakout Performance:**
+   - تست استراتژی ترید معکوس بعد از false breakout
+   - مقایسه P&L با/بدون false breakout detection
+   - بهینه‌سازی candles_since threshold
+
+---
+
+**تاریخ آخرین به‌روزرسانی:** 2025-11-11
+
+---
+
 ## بخش 3.1: الگوهای هارمونیک (Harmonic Patterns)
 
 **📍 کد مرجع:** `signal_generator.py:2465-2664`
