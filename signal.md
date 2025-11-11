@@ -4989,23 +4989,37 @@ is_choppy = self._is_choppy_market(df)
 **شرایط Choppy:**
 
 ```python
-# محاسبه نوسانات جهت قیمت
-close_changes = df['close'].pct_change().iloc[-20:]  # 20 کندل اخیر
-direction_changes = (close_changes > 0).astype(int).diff().abs()
-direction_change_rate = direction_changes.sum() / len(direction_changes)
+# market_regime_detector.py:343-363
 
-# اگر جهت خیلی زیاد تغییر کند → Choppy
-if direction_change_rate > self.choppy_threshold:  # 0.3 = 30%
-    # بررسی اضافی: ADX پایین و BB Width بالا
-    if current_adx < 20 and current_bb_width > median_bb_width * 1.5:
-        is_choppy = True
+# شرط 1: ADX پایین (عدم روند)
+low_adx = df['adx'].iloc[-1] < self.weak_trend_threshold  # < 20
+
+# شرط 2: تغییرات سریع در RSI (5 کندل اخیر)
+rsi_changes = abs(df['rsi'].diff(1).iloc[-5:])
+high_rsi_changes = (rsi_changes > 10).sum() >= 3  # حداقل 3 جهش بالای 10 واحد
+
+# شرط 3: نوسان قیمت بالا در محدوده کوچک
+price_changes = abs(df['close'].pct_change(1).iloc[-5:]) * 100
+avg_change = price_changes.mean()
+
+# شرط 4: تعداد تغییرات جهت (6 کندل اخیر)
+direction_changes = (np.sign(df['close'].diff(1).iloc[-6:]).diff(1) != 0).sum()
+
+# تشخیص نهایی
+if low_adx and (high_rsi_changes or (direction_changes >= 3 and avg_change >= self.choppy_threshold)):
+    is_choppy = True
+```
+
+**منطق تشخیص Choppy:**
+```
+ADX < 20  AND  (RSI_جهش_بالا  OR  (تغییرات_جهت >= 3  AND  میانگین_تغییر >= 0.3%))
 ```
 
 **علائم Choppy Market:**
-1. تغییرات مکرر جهت قیمت (بیش از 30%)
-2. ADX پایین (کمتر از 20)
-3. Bollinger Width بالا (نوسان بالا)
-4. عدم روند مشخص
+1. **ADX پایین** (کمتر از 20) → عدم روند مشخص
+2. **تغییرات سریع RSI** (حداقل 3 جهش > 10 در 5 کندل) → نوسانات شدید مومنتوم
+3. **تغییرات مکرر جهت** (3 یا بیشتر در 6 کندل) → بازار بی‌ثبات
+4. **میانگین تغییر قیمت** (>= 0.3%) → حرکات قیمتی قابل توجه اما بدون جهت
 
 ---
 
