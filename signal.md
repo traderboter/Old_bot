@@ -507,13 +507,19 @@ if momentum_aligned:
 else:
     structure_score *= 0.95  # -5%
 
-# مرحله 5: تنظیم بر اساس موقعیت قیمت نسبت به S/R
-if price_above_support and price_below_resistance:
-    structure_score *= 1.1  # +10%
+# مرحله 5: تنظیم بر اساس موقعیت قیمت نسبت به S/R (با توجه به جهت سیگنال)
+# محل در کد: signal_generator.py:4416-4419
+if 'bullish' in current_trend_dir and price_above_support and price_below_resistance:
+    structure_score *= 1.1  # +10% (برای long: قیمت بالای support و زیر resistance)
+elif 'bearish' in current_trend_dir and price_below_resistance and price_above_support:
+    structure_score *= 1.1  # +10% (برای short: قیمت پایین resistance و بالای support)
 
-# مرحله 6: پاداش برای قرار گرفتن در زون S/R
-if at_support_zone or at_resistance_zone:
-    structure_score *= 1.2  # +20%
+# مرحله 6: پاداش برای قرار گرفتن در زون S/R (بسته به جهت سیگنال)
+# محل در کد: signal_generator.py:4422-4425
+if 'bullish' in current_trend_dir and at_support_zone:
+    structure_score *= 1.2  # +20% (برای long: در زون support)
+elif 'bearish' in current_trend_dir and at_resistance_zone:
+    structure_score *= 1.2  # +20% (برای short: در زون resistance)
 
 # مرحله 7: محدودیت min/max
 structure_score = max(min(structure_score,
