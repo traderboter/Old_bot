@@ -2318,6 +2318,43 @@ analysis_data['price_action'] = await self.analyze_price_action(df)
 3. تحلیل Bollinger Bands
 4. تحلیل ترکیبی حجم و قیمت
 
+**⚠️ نکته امتیازات:** تمام امتیازات سیگنال‌های Price Action از `self.pattern_scores` می‌آیند (signal_generator.py:1471, 1936). مقادیر پیش‌فرض:
+
+```python
+# مقادیر پیش‌فرض pattern_scores (برای Price Action):
+# الگوهای شمعی تک-کندلی:
+# - hammer: 1.0 (از config یا پیش‌فرض 2.0)
+# - inverted_hammer: 0.75
+# - engulfing: 1.25
+# - morning_star: 1.5
+# - evening_star: 1.5
+# - harami: 0.85
+# - doji: 0.25
+# - dragonfly_doji: 0.75
+# - gravestone_doji: 0.75
+# - shooting_star: 0.85
+# - marubozu: 2.0 (default اگر در config نباشد)
+# - hanging_man: 0.85
+#
+# الگوهای چند-کندلی:
+# - head_and_shoulders: 4.0 (base × quality)
+# - inverse_head_and_shoulders: 4.0 (base × quality)
+# - ascending_triangle: 3.5 (base × quality)
+# - descending_triangle: 3.5 (base × quality)
+# - symmetric_triangle: 3.5 (base × quality)
+# - bull_flag: base × flag_quality
+# - bear_flag: base × flag_quality
+#
+# Bollinger Bands:
+# - bollinger_squeeze: 2.0
+# - bollinger_upper_break: 2.5
+# - bollinger_lower_break: 2.5
+#
+# حجم:
+# - high_volume_bullish: 2.8
+# - high_volume_bearish: 2.8
+```
+
 ---
 
 ##### 1️⃣ الگوهای شمعی تک-کندلی (Single Candle Patterns)
@@ -2343,8 +2380,6 @@ analysis_data['price_action'] = await self.analyze_price_action(df)
 
 *جهت Neutral به معنی است که جهت الگو توسط خود کتابخانه تعیین می‌شود (بر اساس value مثبت/منفی).
 
-**⚠️ نکته:** امتیازات بالا از `config.yaml:pattern_scores` خوانده می‌شوند. برای الگوهایی که در config تعریف نشده‌اند (مثل `marubozu`)، مقدار پیش‌فرض **2.0** استفاده می‌شود (خط 1936).
-
 **محاسبه قدرت و امتیاز:**
 
 ```python
@@ -2353,7 +2388,8 @@ pattern_strength = min(1.0, abs(pattern_value) / 100)
 if pattern_strength < 0.1:
     pattern_strength = 0.7  # حداقل قدرت
 
-pattern_score = base_score * pattern_strength
+pattern_score = self.pattern_scores.get(pattern_name, 2.0) * pattern_strength
+# امتیاز پایه از pattern_scores می‌آید، پیش‌فرض: 2.0
 ```
 
 **فرمول:**
@@ -2590,12 +2626,24 @@ bb_squeeze = bb_width < avg_width × 0.8
 ```python
 # signal_generator.py:3929-3947
 if bb_squeeze:
-    signals.append({'type': 'bollinger_squeeze', 'score': 2.0})
+    signals.append({
+        'type': 'bollinger_squeeze',
+        'direction': 'neutral',
+        'score': self.pattern_scores.get('bollinger_squeeze', 2.0)
+    })
 
 if current_close > current_upper:
-    signals.append({'type': 'bollinger_upper_break', 'direction': 'bullish', 'score': 2.5})
+    signals.append({
+        'type': 'bollinger_upper_break',
+        'direction': 'bullish',
+        'score': self.pattern_scores.get('bollinger_upper_break', 2.5)
+    })
 elif current_close < current_lower:
-    signals.append({'type': 'bollinger_lower_break', 'direction': 'bearish', 'score': 2.5})
+    signals.append({
+        'type': 'bollinger_lower_break',
+        'direction': 'bearish',
+        'score': self.pattern_scores.get('bollinger_lower_break', 2.5)
+    })
 ```
 
 ---
@@ -2623,9 +2671,17 @@ volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
 # signal_generator.py:3970-3982
 if volume_ratio > 2.5:
     if current_close > df['open'].iloc[-1]:  # Bullish candle
-        signals.append({'type': 'high_volume_bullish', 'score': 2.8})
+        signals.append({
+            'type': 'high_volume_bullish',
+            'direction': 'bullish',
+            'score': self.pattern_scores.get('high_volume_bullish', 2.8)
+        })
     else:  # Bearish candle
-        signals.append({'type': 'high_volume_bearish', 'score': 2.8})
+        signals.append({
+            'type': 'high_volume_bearish',
+            'direction': 'bearish',
+            'score': self.pattern_scores.get('high_volume_bearish', 2.8)
+        })
 ```
 
 ---
