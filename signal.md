@@ -3187,6 +3187,32 @@ analysis_data['harmonic_patterns'] = self.detect_harmonic_patterns(
 
 الگوهای هارمونیک بر اساس **نسبت‌های دقیق فیبوناچی** بین 5 نقطه بازگشت (X-A-B-C-D) تشکیل می‌شوند. این الگوها بسیار قوی و نادر هستند.
 
+**⚠️ نکته پارامترها:** پارامترهای harmonic patterns از `self.harmonic_config` می‌آیند (signal_generator.py:1520-1525):
+
+```python
+# محل در کد: signal_generator.py:1520-1525
+self.harmonic_config = self.signal_config.get('harmonic_patterns', {})
+self.harmonic_enabled = self.harmonic_config.get('enabled', True)
+self.harmonic_lookback = self.harmonic_config.get('lookback', 100)
+self.harmonic_tolerance = self.harmonic_config.get('tolerance', 0.03)  # ±3%
+self.harmonic_min_quality = self.harmonic_config.get('min_quality', 0.7)  # حداقل confidence
+# مقادیر پیش‌فرض: enabled=True, lookback=100, tolerance=0.03, min_quality=0.7
+```
+
+**⚠️ نکته امتیازات:** امتیازات الگوها از `self.pattern_scores` می‌آیند (signal_generator.py:1471, 2548, 2584, 2620, 2656). مقادیر پیش‌فرض:
+
+```python
+# مقادیر پیش‌فرض pattern_scores (برای الگوهای هارمونیک):
+# - bullish_gartley: 4.0
+# - bearish_gartley: 4.0
+# - bullish_bat: 4.0
+# - bearish_bat: 4.0
+# - bullish_butterfly: 4.5 (تخمینی - ممکن است در config متفاوت باشد)
+# - bearish_butterfly: 4.5
+# - bullish_crab: 5.0 (تخمینی - ممکن است در config متفاوت باشد)
+# - bearish_crab: 5.0
+```
+
 ---
 
 ##### الگوریتم شناسایی (4 مرحله)
@@ -3194,17 +3220,25 @@ analysis_data['harmonic_patterns'] = self.detect_harmonic_patterns(
 **مرحله 1: شناسایی X-A-B-C-D**
 
 ```python
+# signal_generator.py:2475-2492
 # 1. Peaks/Valleys
-peaks, valleys = self.find_peaks_and_valleys(df['close'].values)
-all_points = [(idx, 'peak'/'valley', price), ...]
+peaks, valleys = self.find_peaks_and_valleys(
+    df_window['close'].values,
+    distance=self.peak_detection_settings['distance'],
+    prominence_factor=self.peak_detection_settings['prominence_factor']
+)
+
+# 2. ترکیب peaks و valleys
+all_points = [(idx, 'peak', df_window['high'].iloc[idx]) for idx in peaks]
+all_points.extend([(idx, 'valley', df_window['low'].iloc[idx]) for idx in valleys])
 all_points.sort(key=lambda x: x[0])  # مرتب‌سازی زمانی
 
-# 2. انتخاب 5 نقطه متوالی
+# 3. انتخاب 5 نقطه متوالی
 for i in range(len(all_points) - 4):
     X, A, B, C, D = all_points[i:i + 5]
 
     # شرط: تناوب peak/valley (X≠A≠B≠C≠D)
-    if not all_alternating:
+    if not ((X[1] != A[1]) and (A[1] != B[1]) and (B[1] != C[1]) and (C[1] != D[1])):
         continue
 ```
 
@@ -3282,9 +3316,9 @@ bd_ba = 0.790  # هدف: 0.786 → انحراف: 0.004
 confidence = 1.0 - (0.008 / 0.03) = 0.733 = 73.3%
 ```
 
-**فیلتر:** فقط `confidence >= 0.7` قبول می‌شوند
+**فیلتر:** فقط `confidence >= self.harmonic_min_quality` (پیش‌فرض: 0.7) قبول می‌شوند
 
-**کد:** `signal_generator.py:2522-2527, 2558-2563, ...`
+**کد:** `signal_generator.py:2529, 2565, 2601, 2637` (و همچنین `2660` برای فیلتر نهایی)
 
 ---
 
@@ -3311,9 +3345,16 @@ confidence = 1.0 - (0.008 / 0.03) = 0.733 = 73.3%
         },
 
         'index': 35,  # آخرین نقطه
-        'score': 3.68  # base (4.0) × confidence (0.92)
+        'score': 3.68  # self.pattern_scores.get('bullish_gartley', 4.0) × confidence (0.92)
     }
 ]
+```
+
+**⚠️ نکته:** امتیاز در خود تابع `detect_harmonic_patterns` محاسبه می‌شود (خطوط 2548, 2584, 2620, 2656):
+
+```python
+# signal_generator.py:2548
+'score': self.pattern_scores.get(pattern_type, 4.0) * confidence
 ```
 
 ---
@@ -3323,12 +3364,20 @@ confidence = 1.0 - (0.008 / 0.03) = 0.733 = 73.3%
 **کد:** `signal_generator.py:5300-5311`
 
 ```python
+# signal_generator.py:5300-5311
 for pattern in harmonic_patterns:
+    pattern_type = pattern.get('type', '')
+    direction = pattern.get('direction', '')
+    confidence = pattern.get('confidence', 0.7)
+
+    # امتیاز از خود pattern می‌آید (قبلاً محاسبه شده)
     base_score = self.pattern_scores.get(pattern_type, 4.0)
     pattern_score = base_score * confidence * tf_weight
 
     if direction == 'bullish':
         bullish_score += pattern_score
+    elif direction == 'bearish':
+        bearish_score += pattern_score
 ```
 
 **جدول امتیازات:**
