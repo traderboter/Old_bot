@@ -4310,6 +4310,32 @@ analysis_data['volatility'] = self.analyze_volatility_conditions(df)
 
 این بخش برای **محافظت از سرمایه** در شرایط نوسان غیرعادی طراحی شده است.
 
+**پارامترهای Volatility Analysis:**
+محل در کد: `signal_generator.py:1510-1518`
+
+```python
+self.vol_config = self.signal_config.get('volatility_filter', {})
+self.vol_enabled = self.vol_config.get('enabled', True)
+self.vol_atr_period = self.vol_config.get('atr_period', 14)
+self.vol_atr_ma_period = self.vol_config.get('atr_ma_period', 30)
+self.vol_high_thresh = self.vol_config.get('high_volatility_threshold', 1.3)
+self.vol_low_thresh = self.vol_config.get('low_volatility_threshold', 0.7)
+self.vol_extreme_thresh = self.vol_config.get('extreme_volatility_threshold', 1.8)
+self.vol_scores = self.vol_config.get('scores', {})
+self.vol_reject_extreme = self.vol_config.get('reject_on_extreme_volatility', True)
+```
+
+| پارامتر | مقدار پیش‌فرض | توضیح |
+|---------|---------------|-------|
+| `enabled` | `True` | فعال/غیرفعال بودن تحلیل نوسان |
+| `atr_period` | `14` | دوره محاسبه ATR |
+| `atr_ma_period` | `30` | دوره میانگین متحرک ATR% |
+| `high_volatility_threshold` | `1.3` | آستانه نوسان بالا |
+| `low_volatility_threshold` | `0.7` | آستانه نوسان پایین |
+| `extreme_volatility_threshold` | `1.8` | آستانه نوسان خطرناک |
+| `scores` | `{}` | امتیازات سفارشی برای هر وضعیت |
+| `reject_on_extreme_volatility` | `True` | رد سیگنال در نوسان خطرناک |
+
 ---
 
 #### الگوریتم تحلیل نوسان
@@ -4321,12 +4347,12 @@ analysis_data['volatility'] = self.analyze_volatility_conditions(df)
 ATR نوسان واقعی بازار را اندازه‌گیری می‌کند با در نظر گرفتن گپ‌های قیمتی:
 
 ```python
-# کد: signal_generator.py:4472
+# کد: signal_generator.py:4468-4472
 high_p = df['high'].values.astype(np.float64)
 low_p = df['low'].values.astype(np.float64)
 close_p = df['close'].values.astype(np.float64)
 
-atr = talib.ATR(high_p, low_p, close_p, timeperiod=14)
+atr = talib.ATR(high_p, low_p, close_p, timeperiod=self.vol_atr_period)  # پیش‌فرض: 14
 ```
 
 **فرمول ATR:**
@@ -4391,6 +4417,7 @@ ATR% = (1,500 / 50,000) × 100 = 3.0%
 
 ```python
 # کد: signal_generator.py:4484-4491
+atr_pct_ma = np.zeros_like(atr_pct)
 if use_bottleneck:
     atr_pct_ma = bn.move_mean(atr_pct, window=self.vol_atr_ma_period, min_count=1)
 else:
@@ -4400,7 +4427,7 @@ else:
 ```
 
 **پارامترها:**
-- **window = 30:** میانگین 30 دوره اخیر (پیش‌فرض: `vol_atr_ma_period`)
+- **window = self.vol_atr_ma_period:** میانگین دوره اخیر (پیش‌فرض: 30)
 
 **مثال:**
 ```
@@ -4461,13 +4488,13 @@ vol_score = 1.0
 
 if volatility_ratio > self.vol_extreme_thresh:      # پیش‌فرض: 1.8
     vol_condition = 'extreme'
-    vol_score = 0.5                                 # از پیش‌فرض scores.extreme
+    vol_score = self.vol_scores.get('extreme', 0.5)
 elif volatility_ratio > self.vol_high_thresh:       # پیش‌فرض: 1.3
     vol_condition = 'high'
-    vol_score = 0.8                                 # از پیش‌فرض scores.high
+    vol_score = self.vol_scores.get('high', 0.8)
 elif volatility_ratio < self.vol_low_thresh:        # پیش‌فرض: 0.7
     vol_condition = 'low'
-    vol_score = 0.9                                 # از پیش‌فرض scores.low
+    vol_score = self.vol_scores.get('low', 0.9)
 ```
 
 **جدول طبقه‌بندی (با مقادیر پیش‌فرض):**
@@ -4479,14 +4506,7 @@ elif volatility_ratio < self.vol_low_thresh:        # پیش‌فرض: 0.7
 | 0.7 ≤ ratio < 1.3 | 0.7-1.3 | **normal** | **×1.0** | نوسان عادی - بدون تغییر ✓ |
 | ratio < 0.7 | 0.0-0.7 | **low** | **×0.9** | نوسان پایین - کاهش 10% امتیاز |
 
-**نکته:** این آستانه‌ها قابل تنظیم در فایل کانفیگ هستند:
-```python
-# کد: signal_generator.py:1514-1517
-self.vol_high_thresh = self.vol_config.get('high_volatility_threshold', 1.3)
-self.vol_low_thresh = self.vol_config.get('low_volatility_threshold', 0.7)
-self.vol_extreme_thresh = self.vol_config.get('extreme_volatility_threshold', 1.8)
-self.vol_scores = self.vol_config.get('scores', {})
-```
+**نکته:** امتیازات (`vol_scores`) از فایل کانفیگ خوانده می‌شوند. اگر در کانفیگ تعریف نشده باشند، از مقادیر پیش‌فرض بالا استفاده می‌شود.
 
 ---
 
@@ -4674,7 +4694,7 @@ if not self.vol_enabled or df is None or len(df) < max(self.vol_atr_period, self
 **شرایط:**
 1. `vol_enabled = False` → نوسان در کانفیگ غیرفعال شده
 2. `df is None` → داده موجود نیست
-3. `len(df) < max(14, 30) + 10 = 40` → حداقل 40 کندل لازم است
+3. `len(df) < max(self.vol_atr_period, self.vol_atr_ma_period) + 10` → حداقل کندل لازم (با مقادیر پیش‌فرض: 40 کندل)
 
 **در این صورت:**
 ```python
