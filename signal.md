@@ -6542,22 +6542,147 @@ if direction == 'long':
 
 **3. برای Support/Resistance:**
 ```python
-# signal_generator.py:4134-4207
-if direction == 'long':
+# signal_generator.py:4126-4138
+if direction == 'long' and nearest_support and nearest_support < current_price:
     stop_loss = nearest_support * 0.999
-    # بررسی فاصله تا نزدیک‌ترین مقاومت
-    if nearest_resistance > current_price + (risk_distance * min_rr):
-        take_profit = nearest_resistance * 0.999
+    calculation_method = "Support Level"
+elif direction == 'short' and nearest_resist and nearest_resist > current_price:
+    stop_loss = nearest_resist * 1.001
+    calculation_method = "Resistance Level"
 ```
 
-**4. درصدی ثابت (Fallback):**
+⚠️ **بررسی فاصله S/R:**
 ```python
-# signal_generator.py:4240-4263
+# signal_generator.py:4140-4146
+# اگر S/R خیلی دور باشد (> 3×ATR)، رد می‌شود
+if stop_loss is not None and atr > 0:
+    sl_dist_atr_ratio = abs(current_price - stop_loss) / atr
+    if sl_dist_atr_ratio > 3.0:
+        is_sl_too_far = True
+        stop_loss = None  # روش بعدی (ATR) استفاده می‌شود
+```
+
+**4. بر اساس ATR (اگر S/R نبود یا خیلی دور بود):**
+```python
+# signal_generator.py:4148-4155
+if stop_loss is None and atr > 0:
+    sl_multiplier = adapted_risk_config.get('atr_trailing_multiplier', 2.0)
+    if direction == 'long':
+        stop_loss = current_price - (atr * sl_multiplier)
+    else:
+        stop_loss = current_price + (atr * sl_multiplier)
+    calculation_method = f"ATR x{sl_multiplier}"
+```
+
+**5. درصدی ثابت (Fallback نهایی):**
+```python
+# signal_generator.py:4157-4163
 default_sl_percent = adapted_risk_config.get('default_stop_loss_percent', 1.5)
 
 if direction == 'long':
     stop_loss = current_price * (1 - default_sl_percent/100)
-    take_profit = current_price * (1 + (default_sl_percent * min_rr) / 100)
+else:
+    stop_loss = current_price * (1 + default_sl_percent/100)
+calculation_method = f"Percentage {default_sl_percent}%"
+```
+
+#### مکانیزم‌های Safety برای SL:
+
+**1. حداقل فاصله SL:**
+```python
+# signal_generator.py:4165-4174
+min_sl_distance = atr * 0.5 if atr > 0 else current_price * 0.001
+
+if direction == 'long' and (current_price - stop_loss) < min_sl_distance:
+    stop_loss = current_price - min_sl_distance
+    calculation_method = f"Minimum Distance (was {original_sl:.6f})"
+elif direction == 'short' and (stop_loss - current_price) < min_sl_distance:
+    stop_loss = current_price + min_sl_distance
+```
+
+**2. جلوگیری از فاصله صفر:**
+```python
+# signal_generator.py:4176-4185
+risk_distance = abs(current_price - stop_loss)
+if risk_distance <= 1e-6:
+    logger.warning(f"Risk distance too small. Using default percentage.")
+    risk_distance = current_price * (default_sl_percent / 100)
+    if direction == 'long':
+        stop_loss = current_price - risk_distance
+    else:
+        stop_loss = current_price + risk_distance
+```
+
+#### محاسبه Take Profit:
+
+**اگر TP از قبل تنظیم نشده باشد (در Harmonic یا Channel):**
+```python
+# signal_generator.py:4187-4195
+if take_profit is None:
+    reward_distance = risk_distance * preferred_rr
+    reward_distance = max(reward_distance, current_price * 0.001)  # حداقل reward
+
+    if direction == 'long':
+        take_profit = current_price + reward_distance
+    else:
+        take_profit = current_price - reward_distance
+```
+
+**تنظیم TP بر اساس S/R نزدیک:**
+```python
+# signal_generator.py:4197-4211
+# اگر مقاومت/حمایت نزدیک‌تر از TP محاسبه‌شده باشد
+if direction == 'long' and nearest_resist and nearest_resist < take_profit:
+    # فقط اگر هنوز RR حداقلی را برآورده کند
+    if nearest_resist > current_price + (risk_distance * min_rr):
+        take_profit = nearest_resist * 0.999
+    else:
+        logger.warning("Nearest resistance would make TP too close, keeping calculated TP.")
+
+elif direction == 'short' and nearest_support and nearest_support > take_profit:
+    if nearest_support < current_price - (risk_distance * min_rr):
+        take_profit = nearest_support * 1.001
+    else:
+        logger.warning("Nearest support would make TP too close, keeping calculated TP.")
+```
+
+#### مکانیزم‌های Safety برای TP:
+
+**1. اطمینان از RR حداقلی:**
+```python
+# signal_generator.py:4213-4223
+if direction == 'long' and take_profit <= current_price + (risk_distance * min_rr * 0.9):
+    logger.warning(f"Calculated TP does not meet min RR ({min_rr}). Adjusting TP.")
+    take_profit = current_price + (risk_distance * min_rr)
+
+elif direction == 'short' and take_profit >= current_price - (risk_distance * min_rr * 0.9):
+    take_profit = current_price - (risk_distance * min_rr)
+```
+
+**2. جلوگیری از مقادیر صفر:**
+```python
+# signal_generator.py:4229-4236
+if abs(take_profit) < 1e-6:
+    logger.error(f"Calculated TP is near zero! Using minimum viable TP.")
+    take_profit = current_price * (1.05 if direction == 'long' else 0.95)
+
+if abs(stop_loss) < 1e-6:
+    logger.error(f"Calculated SL is near zero! Using minimum viable SL.")
+    stop_loss = current_price * (0.95 if direction == 'long' else 1.05)
+```
+
+**3. دقت بالا:**
+```python
+# signal_generator.py:4238-4245
+precision = 8  # دقت 8 رقم اعشار برای جلوگیری از round به صفر
+
+return {
+    'stop_loss': round(stop_loss, precision),
+    'take_profit': round(take_profit, precision),
+    'risk_reward_ratio': round(final_rr, 2),
+    'risk_amount_per_unit': round(risk_distance, precision),
+    'sl_method': calculation_method
+}
 ```
 
 ---
