@@ -3193,7 +3193,7 @@ for pattern in harmonic_patterns:
 
 ```python
 if harmonic_found:
-    best_pattern = sorted(patterns, key=lambda x: x['confidence'])[0]
+    best_pattern = sorted(harmonic_patterns, key=lambda x: x.get('confidence', 0), reverse=True)[0]
     D_price = best_pattern['points']['D']['price']
     A_price = best_pattern['points']['A']['price']
     X_price = best_pattern['points']['X']['price']
