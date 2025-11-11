@@ -838,6 +838,29 @@ analysis_data['momentum'] = self.analyze_momentum_indicators(df)
 
 ##### 2.1 اندیکاتورهای محاسبه شده
 
+**⚠️ نکته مهم:** امتیازات سیگنال‌ها از `self.pattern_scores` می‌آیند که از configuration خوانده می‌شوند (signal_generator.py:1471). مقادیر پیش‌فرض در زیر ذکر شده‌اند:
+
+```python
+# محل در کد: signal_generator.py:1471
+self.pattern_scores = self.signal_config.get('pattern_scores', {})
+
+# مقادیر پیش‌فرض pattern_scores (برای momentum indicators):
+# - macd_bullish_crossover: 2.2
+# - macd_bearish_crossover: 2.2
+# - macd_bullish_zero_cross: 1.8
+# - macd_bearish_zero_cross: 1.8
+# - rsi_oversold_reversal: 2.3
+# - rsi_overbought_reversal: 2.3
+# - rsi_bullish_divergence: 3.5
+# - rsi_bearish_divergence: 3.5
+# - stochastic_oversold_bullish_cross: 2.5
+# - stochastic_overbought_bearish_cross: 2.5
+# - mfi_oversold_reversal: 2.4
+# - mfi_overbought_reversal: 2.4
+```
+
+---
+
 ###### 1. **MACD (Moving Average Convergence Divergence)**
 
 **محاسبه:**
@@ -1150,18 +1173,22 @@ ind_change_pct = 0.125
 div_strength = min(1.0, (0.10 + 0.125) / 2 * 5) = min(1.0, 0.5625) = 0.56
 
 # امتیاز نهایی:
+# base_score از self.pattern_scores.get('rsi_bearish_divergence', 3.5)
 div_score = 3.5 * 0.56 = 1.96
 ```
 
 **گام 4: فیلتر کیفیت واگرایی**
 
 ```python
-# signal_generator.py:2974
-if div_strength >= self.divergence_sensitivity:
+# signal_generator.py:2974-2976
+if div_strength >= self.divergence_sensitivity:  # پیش‌فرض: 0.75 (signal_generator.py:1473)
     # فقط واگرایی‌های با کیفیت کافی ذخیره می‌شوند
+    div_score = self.pattern_scores.get(f"{indicator_name}_bearish_divergence", 3.5) * div_strength
+
     signals.append({
         'type': 'rsi_bearish_divergence',
         'direction': 'bearish',
+        'index': p2_idx,  # اندیکس قله دوم
         'score': div_score,
         'strength': float(div_strength),
         'details': {
