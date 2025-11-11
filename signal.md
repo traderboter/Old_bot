@@ -5791,26 +5791,87 @@ alignment_factor = 0.7 + (0.875 * 0.6) = 1.225  # خوب ✅
 for tf, result in analysis_results.items():
     tf_weight = self.timeframe_weights.get(tf, 1.0)  # 0.7, 0.85, 1.0, 1.2
 
-    # امتیازات trend
+    # امتیازات trend (با ضریب فاز روند)
     trend_strength = result.get('trend', {}).get('strength', 0)
+    trend_phase = result.get('trend', {}).get('phase', 'undefined')
+
+    # محاسبه phase_multiplier (signal_generator.py:4793-4806)
+    phase_multiplier = _get_trend_phase_multiplier(trend_phase, direction)
+    # مقادیر ممکن:
+    #   early: 1.2      - روند تازه (بهترین فرصت)
+    #   developing: 1.1 - روند در حال رشد
+    #   mature: 0.9     - روند بالغ (احتیاط)
+    #   late: 0.7       - روند دیرهنگام (خطرناک)
+    #   pullback: 1.1   - اصلاح در روند (فرصت خوب)
+    #   transition: 0.8 - انتقال بین روندها
+    #   undefined: 1.0  - نامشخص
+
     if trend_strength > 0:
-        bullish_score += trend_strength * tf_weight
+        bullish_score += trend_strength * tf_weight * phase_multiplier
     else:
-        bearish_score += abs(trend_strength) * tf_weight
+        bearish_score += abs(trend_strength) * tf_weight * phase_multiplier
 
-    # امتیازات momentum
-    bullish_score += result.get('momentum', {}).get('bullish_score', 0) * tf_weight
-    bearish_score += result.get('momentum', {}).get('bearish_score', 0) * tf_weight
+    # امتیازات momentum (با ضریب قدرت مومنتوم)
+    momentum_strength = result.get('momentum', {}).get('momentum_strength', 1.0)
+    bullish_score += result.get('momentum', {}).get('bullish_score', 0) * tf_weight * momentum_strength
+    bearish_score += result.get('momentum', {}).get('bearish_score', 0) * tf_weight * momentum_strength
 
-    # امتیازات MACD
-    bullish_score += result.get('macd', {}).get('bullish_score', 0) * tf_weight
-    bearish_score += result.get('macd', {}).get('bearish_score', 0) * tf_weight
+    # امتیازات MACD (با ضریب نوع بازار)
+    # محاسبه macd_type_strength (signal_generator.py:5258-5267)
+    macd_market_type = result.get('macd', {}).get('market_type', 'unknown')
+    if macd_market_type.startswith('A_'):      # A_bullish_strong
+        macd_type_strength = 1.2
+    elif macd_market_type.startswith('C_'):    # C_bearish_strong
+        macd_type_strength = 1.2
+    elif macd_market_type.startswith(('B_', 'D_')):  # B_correction, D_rebound
+        macd_type_strength = 1.0
+    else:                                      # X_transition, unknown
+        macd_type_strength = 0.8
+
+    bullish_score += result.get('macd', {}).get('bullish_score', 0) * tf_weight * macd_type_strength
+    bearish_score += result.get('macd', {}).get('bearish_score', 0) * tf_weight * macd_type_strength
 
     # و همین‌طور برای price_action, patterns, channels, cycles, ...
 
 # امتیاز پایه = بالاترین امتیاز (bullish یا bearish)
 base_score = bullish_score if final_direction == 'bullish' else bearish_score
 ```
+
+**خلاصه ضرایب اضافی در محاسبه Base Score:**
+
+| اندیکاتور | ضریب پایه | ضرایب اضافی | محدوده | هدف |
+|-----------|----------|-------------|--------|------|
+| **Trend** | `tf_weight` | **phase_multiplier** | 0.7 - 1.2 | تشخیص مرحله روند (early بهتر از late) |
+| **Momentum** | `tf_weight` | **momentum_strength** | معمولاً 1.0 | قدرت مومنتوم |
+| **MACD** | `tf_weight` | **macd_type_strength** | 0.8 - 1.2 | نوع بازار (A_, C_ قوی‌تر از X_) |
+| سایر موارد | `tf_weight` | - | 0.7 - 1.2 | فقط وزن تایم‌فریم |
+
+**مثال محاسبه کامل با ضرایب:**
+
+```python
+# فرض: تایم‌فریم 4h با امتیاز trend = 50
+tf_weight = 1.2           # تایم‌فریم 4h
+trend_strength = 50
+trend_phase = 'early'     # روند تازه شروع شده
+phase_multiplier = 1.2    # بهترین فرصت!
+
+# محاسبه واقعی:
+contribution = 50 × 1.2 × 1.2 = 72  # به جای 60 (اگر phase_multiplier نبود)
+
+# یا برای MACD:
+macd_score = 30
+macd_market_type = 'A_bullish_strong'
+macd_type_strength = 1.2
+
+contribution = 30 × 1.2 × 1.2 = 43.2  # به جای 36
+```
+
+**⚠️ نکته مهم:** این ضرایب اضافی می‌توانند **تأثیر قابل توجهی** بر امتیاز نهایی داشته باشند:
+- یک trend در فاز `early` تا **+20%** امتیاز بیشتر می‌گیرد
+- یک trend در فاز `late` تا **-30%** امتیاز کمتر می‌گیرد
+- MACD در بازار قوی (A_, C_) تا **+20%** امتیاز بیشتر می‌گیرد
+
+---
 
 #### مرحله 2: اعمال ضرایب مختلف
 
@@ -5848,12 +5909,27 @@ final_score = (
 )
 ```
 
-#### مثال محاسبه واقعی:
+#### مثال محاسبه واقعی (با ضرایب کامل):
 
 ```python
-# فرض: همه تایم‌فریم‌ها bullish با امتیاز 50
-base_score = (50 * 0.7) + (50 * 0.85) + (50 * 1.0) + (50 * 1.2)
-base_score ≈ 187.5
+# فرض: همه تایم‌فریم‌ها bullish با امتیاز trend = 50
+# و همه در فاز 'developing' هستند
+
+# 5m: trend_score = 50, phase = 'developing' (×1.1), tf_weight = 0.7
+base_score_5m = 50 × 0.7 × 1.1 = 38.5
+
+# 15m: trend_score = 50, phase = 'developing' (×1.1), tf_weight = 0.85
+base_score_15m = 50 × 0.85 × 1.1 = 46.75
+
+# 1h: trend_score = 50, phase = 'early' (×1.2), tf_weight = 1.0
+base_score_1h = 50 × 1.0 × 1.2 = 60
+
+# 4h: trend_score = 50, phase = 'early' (×1.2), tf_weight = 1.2
+base_score_4h = 50 × 1.2 × 1.2 = 72
+
+# مجموع (فقط trend):
+base_score ≈ 38.5 + 46.75 + 60 + 72 = 217.25
+# (در مقایسه با 187.5 بدون phase_multiplier - افزایش 16%!)
 
 # ضرایب
 timeframe_weight = 1.25         # بر اساس higher TF confirmation
@@ -5872,11 +5948,15 @@ price_channel_score = 1.0       # بدون کانال
 cyclical_pattern_score = 1.0    # بدون الگوی چرخه‌ای
 
 # محاسبه نهایی
-final_score = 187.5 * 1.25 * 1.1 * 1.2 * 1.2 * 1.3 * 1.1 * 1.0 * 1.15 * 1.1 * 1.0 * 1.2 * 1.0 * 1.0
-final_score ≈ 1089
+final_score = 217.25 * 1.25 * 1.1 * 1.2 * 1.2 * 1.3 * 1.1 * 1.0 * 1.15 * 1.1 * 1.0 * 1.2 * 1.0 * 1.0
+final_score ≈ 1261
+# (در مقایسه با 1089 بدون phase_multiplier - افزایش 16%!)
 ```
 
-**نکته کلیدی:**
+**نکات کلیدی:**
+- **phase_multiplier** می‌تواند تا 20% امتیاز را افزایش دهد (early) یا تا 30% کاهش دهد (late)
+- **macd_type_strength** می‌تواند تا 20% امتیاز MACD را افزایش دهد (A_, C_) یا تا 20% کاهش دهد (X_)
+- **momentum_strength** معمولاً 1.0 است اما می‌تواند متفاوت باشد
 - Alignment تأثیر **کمی** دارد (فقط 50% از (alignment - 1.0))
 - Alignment فقط یکی از 13 ضریب مختلف است
 - امتیاز نهایی از ضرب base_score در همه ضرایب حاصل می‌شود
